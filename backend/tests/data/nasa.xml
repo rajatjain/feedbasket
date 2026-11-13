@@ -1,0 +1,99 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<rss xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:wfw="http://wellformedweb.org/CommentAPI/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:sy="http://purl.org/rss/1.0/modules/syndication/" xmlns:slash="http://purl.org/rss/1.0/modules/slash/" xmlns:media="http://search.yahoo.com/mrss/" version="2.0">
+
+<channel>
+	<title>NASA</title>
+	<link>https://www.nasa.gov</link>
+	<description>Official National Aeronautics and Space Administration Website</description>
+	<item>
+		<title>APOD: 2026 November 13 – NGC 206 and the Star Clouds of Andromeda</title>
+		<link>https://science.nasa.gov/image-article/apod-2026-november-13-ngc-206-and-the-star-clouds-of-andromeda/</link>
+
+		<dc:creator></dc:creator>
+		<pubDate>Fri, 13 Nov 2026 05:05:00 +0000</pubDate>
+				<guid isPermaLink="false">https://science.nasa.gov/image-article/apod-2026-november-13-ngc-206-and-the-star-clouds-of-andromeda/</guid>
+
+					</item>
+		<item>
+		<title>A Global Rebound for Mangroves</title>
+		<link>https://science.nasa.gov/earth/earth-observatory/a-global-rebound-for-mangroves/</link>
+
+		<dc:creator></dc:creator>
+		<pubDate>Fri, 13 Nov 2026 05:01:00 +0000</pubDate>
+				<guid isPermaLink="false">https://science.nasa.gov/earth/earth-observatory/a-global-rebound-for-mangroves/</guid>
+
+					</item>
+		<item>
+		<title>I Am Artemis Katie Spicer</title>
+		<link>https://www.nasa.gov/missions/artemis/i-am-artemis-katie-spicer/</link>
+
+		<dc:creator>Lee Mohon</dc:creator>
+		<pubDate>Thu, 12 Nov 2026 20:10:02 +0000</pubDate>
+				<guid isPermaLink="false">https://www.nasa.gov/?p=1065005</guid>
+
+					</item>
+		<item>
+		<title>Heart in the Sky at NASA Kennedy</title>
+		<link>https://www.nasa.gov/image-article/heart-in-the-sky-at-nasa-kennedy/</link>
+
+		<dc:creator>HQ Web Team</dc:creator>
+		<pubDate>Thu, 12 Nov 2026 19:12:49 +0000</pubDate>
+				<guid isPermaLink="false">https://www.nasa.gov/?post_type=image-article&amp;p=1065057</guid>
+
+					</item>
+		<item>
+		<title>NASA Ames Stars of the Month: November 2026</title>
+		<link>https://www.nasa.gov/general/nasa-ames-stars-of-the-month-november-2026/</link>
+
+		<dc:creator>Aaron McKinnon</dc:creator>
+		<pubDate>Thu, 12 Nov 2026 17:54:32 +0000</pubDate>
+				<guid isPermaLink="false">https://www.nasa.gov/?p=1065021</guid>
+
+					</item>
+		<item>
+		<title>NASA’s Hubble Offers Cosmic Sampler of Targets for Roman</title>
+		<link>https://science.nasa.gov/missions/hubble/nasas-hubble-offers-cosmic-sampler-of-targets-for-roman/</link>
+
+		<dc:creator></dc:creator>
+		<pubDate>Thu, 12 Nov 2026 13:18:40 +0000</pubDate>
+				<guid isPermaLink="false">https://science.nasa.gov/missions/hubble/nasas-hubble-offers-cosmic-sampler-of-targets-for-roman/</guid>
+
+					</item>
+		<item>
+		<title>Through NASA’s Lens: Capturing Space Shuttle Endeavour’s Move to LA</title>
+		<link>https://www.nasa.gov/centers-and-facilities/armstrong/through-nasas-lens-capturing-space-shuttle-endeavours-move-to-la/</link>
+
+		<dc:creator>Dede Dinius</dc:creator>
+		<pubDate>Thu, 12 Nov 2026 13:00:00 +0000</pubDate>
+				<guid isPermaLink="false">https://www.nasa.gov/?p=1064883</guid>
+
+					</item>
+		<item>
+		<title>APOD: 2026 November 12 – Moon, Venus and Spica Meet</title>
+		<link>https://science.nasa.gov/image-article/apod-2026-november-12-moon-venus-and-spica-meet/</link>
+
+		<dc:creator></dc:creator>
+		<pubDate>Thu, 12 Nov 2026 05:05:00 +0000</pubDate>
+				<guid isPermaLink="false">https://science.nasa.gov/image-article/apod-2026-november-12-moon-venus-and-spica-meet/</guid>
+
+					</item>
+		<item>
+		<title>Scotland’s Flow Country</title>
+		<link>https://science.nasa.gov/earth/earth-observatory/scotlands-flow-country/</link>
+
+		<dc:creator></dc:creator>
+		<pubDate>Thu, 12 Nov 2026 05:01:00 +0000</pubDate>
+				<guid isPermaLink="false">https://science.nasa.gov/earth/earth-observatory/scotlands-flow-country/</guid>
+
+					</item>
+		<item>
+		<title>Curiosity Blog, Sols 5063-5069 Rocks and Chips</title>
+		<link>https://science.nasa.gov/blog/curiosity-blog-sols-5063-5069-rocks-and-chips/</link>
+
+		<dc:creator></dc:creator>
+		<pubDate>Thu, 12 Nov 2026 00:41:35 +0000</pubDate>
+				<guid isPermaLink="false">https://science.nasa.gov/blog/curiosity-blog-sols-5063-5069-rocks-and-chips/</guid>
+
+					</item>
+	</channel>
+</rss>

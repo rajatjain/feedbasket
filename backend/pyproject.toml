@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "feedbasket"
+version = "0.1.0"
+description = "Local RSS and read-later backend"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.14,<2",
+    "authlib>=1.6,<2",
+    "feedparser>=6,<7",
+    "fastapi>=0.115,<1",
+    "httpx>=0.28,<1",
+    "lxml>=5,<7",
+    "pydantic>=2,<3",
+    "itsdangerous>=2,<3",
+    "jinja2>=3.1,<4",
+    "nh3>=0.2,<1",
+    "python-multipart>=0.0.18,<1",
+    "sqlalchemy>=2,<3",
+    "trafilatura>=2,<3",
+    "uvicorn>=0.34,<1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<10",
+    "pytest-cov>=6,<8",
+]
+
+[project.scripts]
+feedbasket = "feedbasket.main:run"
+
+[tool.setuptools]
+packages = ["feedbasket", "feedbasket.migrations", "feedbasket.migrations.versions"]
+
+[tool.setuptools.package-dir]
+"feedbasket.migrations" = "migrations"
+
+[tool.setuptools.package-data]
+feedbasket = ["templates/*.html", "*.cjs"]
+"feedbasket.migrations" = ["script.py.mako"]
+
+[tool.coverage.run]
+omit = ["*/feedbasket/auth.py"]

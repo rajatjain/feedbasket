@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "FeedBasket",
+  "version": "0.1.0",
+  "description": "Save articles to FeedBasket and subscribe to their feeds.",
+  "minimum_chrome_version": "120",
+  "permissions": ["activeTab", "scripting", "storage", "alarms"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "optional_host_permissions": ["https://*/*"],
+  "background": { "service_worker": "worker.js", "type": "module" },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "FeedBasket",
+    "default_icon": { "16": "assets/offline-16.png", "32": "assets/offline-32.png" }
+  },
+  "icons": { "16": "assets/online-16.png", "32": "assets/online-32.png", "128": "assets/online-128.png" }
+}

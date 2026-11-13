@@ -1,0 +1,44 @@
+services:
+  backend:
+    build: .
+    init: true
+    restart: unless-stopped
+    user: "${FEEDBASKET_UID:-${FEEDBASKET_HOST_UID:-1000}}:${FEEDBASKET_GID:-${FEEDBASKET_HOST_GID:-1000}}"
+    ports:
+      - "127.0.0.1:12000:12000"
+    environment:
+      ADMIN_USER: "${ADMIN_USER-${FEEDBASKET_ADMIN_USERNAME-admin}}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD-${FEEDBASKET_ADMIN_PASSWORD-}}"
+      FEEDBASKET_ADMIN_EMAIL: "${FEEDBASKET_ADMIN_EMAIL:-}"
+      FEEDBASKET_GOOGLE_CLIENT_ID: "${FEEDBASKET_GOOGLE_CLIENT_ID:-}"
+      FEEDBASKET_GOOGLE_CLIENT_SECRET: "${FEEDBASKET_GOOGLE_CLIENT_SECRET:-}"
+      FEEDBASKET_SESSION_SECRET: "${FEEDBASKET_SESSION_SECRET:-}"
+      DB_DIR: "${DB_DIR:-${HOME}/feedbasket/db}"
+      LOGS_DIR: "${LOGS_DIR:-${HOME}/feedbasket/logs}"
+      BACKUP_DIR: "${BACKUP_DIR:-${HOME}/feedbasket/backups}"
+    volumes:
+      - type: bind
+        source: "${DB_DIR:-${HOME}/feedbasket/db}"
+        target: "${DB_DIR:-${HOME}/feedbasket/db}"
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${LOGS_DIR:-${HOME}/feedbasket/logs}"
+        target: "${LOGS_DIR:-${HOME}/feedbasket/logs}"
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${BACKUP_DIR:-${HOME}/feedbasket/backups}"
+        target: "${BACKUP_DIR:-${HOME}/feedbasket/backups}"
+        bind:
+          create_host_path: false
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "from urllib.request import urlopen; urlopen('http://127.0.0.1:12000/health', timeout=3).close()"
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

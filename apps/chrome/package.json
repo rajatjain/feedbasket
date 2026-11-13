@@ -1,0 +1,12 @@
+{
+  "name": "feedbasket-chrome",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node ../design/generate.mjs --check && tsc && node build.mjs"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.0",
+    "typescript": "^5.9.3"
+  }
+}

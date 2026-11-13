@@ -1,0 +1,104 @@
+import SwiftUI
+
+struct BasketSettings: View {
+    @Environment(BasketStore.self) private var store
+    @AppStorage("theme") private var theme = BasketTheme.system
+    @AppStorage("accent") private var accent = "green"
+    @AppStorage(AutoReadPreference.key) private var autoReadDelay = AutoReadPreference.defaultDelay
+    @BasketState private var origin: String = ""
+    @BasketState private var cutoff: Date = Calendar.current.startOfDay(for: .now)
+    @BasketState private var quota: Double = 1.0
+    @BasketState private var cleanup: Cleanup? = nil
+
+    enum Cleanup: String, Identifiable {
+        case allOffline = "Clear all offline copies?"
+        case datedOffline = "Remove offline copies before this date?"
+        case allBackend = "Remove all backend article bodies?"
+        case datedBackend = "Remove backend article bodies before this date?"
+        var id: Self { self }
+        var backend: Bool { self == .allBackend || self == .datedBackend }
+        var dated: Bool { self == .datedOffline || self == .datedBackend }
+    }
+
+    var body: some View {
+        TabView {
+            Form {
+                Section("Backend connection") {
+                    TextField("Backend API URL", text: $origin)
+                    HStack {
+                        BasketStatus(online: store.reachable)
+                        Spacer()
+                        Button("Save URL") { Task { await store.setOrigin(origin) } }
+                            .buttonStyle(BasketButton(primary: true))
+                    }
+                }
+            }.formStyle(.grouped).tabItem { Label("Connection", systemImage: "network") }
+
+            Form {
+                Picker("Theme", selection: $theme) { ForEach(BasketTheme.allCases) { Text($0.label).tag($0) } }
+                Picker("Accent", selection: $accent) {
+                    ForEach(["green", "blue", "violet", "rose", "amber"], id: \.self) { Text($0.capitalized) }
+                }
+            }.formStyle(.grouped).tabItem { Label("Appearance", systemImage: "paintpalette") }
+
+            Form {
+                Stepper(value: $autoReadDelay, in: AutoReadPreference.delays) {
+                    Text("Automatically mark as read after \(autoReadDelay) seconds")
+                }
+            }.formStyle(.grouped).tabItem { Label("Reading", systemImage: "book") }
+
+            Form {
+                Section("Offline Storage") {
+                    LabeledContent("Used on this Mac", value: ByteCountFormatter.string(fromByteCount: Int64(store.offlineBytes), countStyle: .file))
+                    Text("\(store.offlineCount) offline articles")
+                    Text("Read Later and the latest 10 articles per subscription download automatically.")
+                        .foregroundStyle(.secondary)
+                    DatePicker("Published before", selection: $cutoff, displayedComponents: .date)
+                    HStack {
+                        Button("Remove by date…") { cleanup = .datedOffline }
+                        Button("Clear all…") { cleanup = .allOffline }
+                    }.buttonStyle(BasketButton()).disabled(store.offlineCount == 0)
+                    Button("Resume automatic downloads") { store.resumeDownloads() }
+                        .buttonStyle(BasketButton()).disabled(store.profile == nil)
+                }
+                Section("Backend storage") {
+                    if let storage = store.storage {
+                        LabeledContent("Article bodies", value: ByteCountFormatter.string(fromByteCount: Int64(storage.used_bytes), countStyle: .file))
+                        TextField("Account limit (GB)", value: $quota, format: .number)
+                        Button("Save limit") {
+                            guard quota.isFinite && (0...1000).contains(quota) else {
+                                store.notify("Enter a limit between 0 and 1,000 GB.", icon: "exclamationmark.circle", at: .settings)
+                                return
+                            }
+                            Task { await store.setQuota(Int(quota * 1_000_000_000)) }
+                        }.buttonStyle(BasketButton(primary: true))
+                        HStack {
+                            Button("Remove by date…") { cleanup = .datedBackend }
+                            Button("Remove all…") { cleanup = .allBackend }
+                        }.buttonStyle(BasketButton()).disabled(storage.used_bytes == 0)
+                    } else {
+                        Text("Connect and sign in to view your account’s storage.")
+                    }
+                }.disabled(!store.canUseAPI)
+            }.formStyle(.grouped).tabItem { Label("Storage", systemImage: "internaldrive") }
+
+            DiagnosticsView().tabItem { Label("Diagnostics", systemImage: "list.bullet.rectangle") }
+        }
+        .padding(BasketTokens.spacing)
+        .frame(width: 555, height: 505)
+        .modifier(BasketToastOverlay(location: .settings))
+        .onAppear { origin = store.origin.absoluteString }
+        .task(id: store.canUseAPI) {
+            await store.loadStorage()
+            if let storage = store.storage { quota = Double(storage.quota_bytes) / 1_000_000_000 }
+        }
+        .alert(item: $cleanup) { item in
+            Alert(title: Text(item.rawValue), message: Text("Your article list, tags, and read status are preserved."),
+                  primaryButton: .destructive(Text("Remove")) {
+                let date = item.dated ? Calendar.current.startOfDay(for: cutoff) : nil
+                if item.backend { Task { await store.clearBackendContent(before: date) } }
+                else { store.clearOffline(before: date) }
+            }, secondaryButton: .cancel())
+        }
+    }
+}

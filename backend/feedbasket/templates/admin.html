@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FeedBasket · Admin</title>
+<style>
+:root { color-scheme: light dark; --background: light-dark(#f4f5f0,#202420); --panel: light-dark(#fffefa,#282d28); --ink: light-dark(#242d25,#eceee7); --subtle: light-dark(#525d53,#bfc9bc); --line: light-dark(#d9dfd4,#424d42); --accent: light-dark(#315b48,#acd2b7); --on-accent: light-dark(#fff,#162c20); }
+* { box-sizing: border-box; }
+body { margin: 0; color: var(--ink); background: var(--background); font: 15px/1.5 system-ui,sans-serif; }
+main { max-width: 1010px; padding: 30px 20px 54px; margin: auto; }
+header, .heading, .profile, .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+header { margin-bottom: 23px; }
+h1 { font: 600 34px/1.1 Georgia,serif; margin: 0; }
+h2 { font-size: 17px; margin: 0 0 12px; }
+p { margin: 7px 0; }
+small, .subtle { color: var(--subtle); }
+code, td, small { overflow-wrap: anywhere; }
+.grid { display: grid; grid-template-columns: minmax(0,1.4fr) minmax(0,1fr); gap: 15px; align-items: start; }
+section { padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.full { grid-column: 1 / -1; }
+label { display: grid; gap: 4px; font-size: 13px; margin-bottom: 10px; }
+input, select, button, .button { font: inherit; border: 1px solid var(--line); color: inherit; background: var(--panel); padding: 6px 10px; border-radius: 6px; }
+button, .button { cursor: pointer; }
+.primary { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+a { color: var(--accent); }
+a.button { display: inline-block; text-decoration: none; }
+.profile { justify-content: flex-end; font-size: 13px; }
+.status { border-left: 3px solid var(--accent); padding-left: 9px; margin-bottom: 15px; }
+table { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 13px; }
+th, td { padding: 7px; text-align: left; border-bottom: 1px solid var(--line); }
+td:last-child, th:last-child { width: 25%; }
+td small { display: block; }
+ul { padding: 0; list-style: none; }
+li { padding: 5px 0; border-top: 1px solid var(--line); }
+@media (max-width: 660px) { .grid { grid-template-columns: 1fr; } .profile { justify-content: flex-start; } }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <div><h1>FeedBasket</h1><small>Backend administration</small></div>
+  {% if admin_username %}
+  <div class="profile">
+    <strong>{{ admin_username }}</strong>
+    <form action="/admin/logout" method="post"><input type="hidden" name="token" value="{{ csrf }}"><button>Sign out</button></form>
+  </div>
+  {% endif %}
+</header>
+{% if not admin_username %}
+<section>
+  <h2>Admin sign-in</h2>
+  {% if message %}<p role="status">{{ message }}</p>{% endif %}
+  {% if admin_configured %}
+  <form action="/admin/login" method="post">
+    <input type="hidden" name="token" value="{{ csrf }}">
+    <label>Username<input name="username" autocomplete="username" required></label>
+    <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+    <button class="primary">Sign in</button>
+  </form>
+  {% else %}
+  <p>Set <code>ADMIN_PASSWORD</code> in <code>.env</code> and restart the backend.</p>
+  {% endif %}
+</section>
+{% else %}
+{% if message %}<p class="status" role="status">{{ message }}</p>{% endif %}
+<div class="grid">
+<section>
+  <div class="heading"><h2>Backups</h2><form action="/admin/backup/run" method="post"><input type="hidden" name="token" value="{{ csrf }}"><button class="primary">Back Up Now</button></form></div>
+  <form action="/admin/backup/settings" method="post">
+    <input type="hidden" name="token" value="{{ csrf }}">
+    {% if backup_folder_managed %}
+    <p>Destination folder <code>{{ backup.folder }}</code></p>
+    {% else %}
+    <label>Destination folder <input name="folder" value="{{ backup.folder }}" required></label>
+    {% endif %}
+    <div class="row">
+      <label>Frequency <select name="frequency">
+        {% for option in ('daily', 'weekly', 'disabled') %}<option {% if option == backup.frequency %}selected{% endif %}>{{ option }}</option>{% endfor %}
+      </select></label>
+      <label>Snapshots to keep <input name="retention" type="number" min="1" max="365" value="{{ backup.retention }}" required></label>
+      <button>Save backup settings</button>
+    </div>
+  </form>
+  <p><small>Last successful backup · {{ backup.last_at|local_time }}</small></p>
+  {% if backup.last_path %}<p><small>{{ backup.last_path }}</small></p>{% endif %}
+  <p><small>Next scheduled backup · {{ backup.next_at|local_time }}</small></p>
+</section>
+<section>
+  <h2>Database</h2>
+  <p><strong>SQLite · {{ database_mb }} MB</strong></p>
+  <p><code>{{ database }}</code></p>
+  <p class="subtle">Set <code>DB_DIR</code> in <code>.env</code> and restart the backend to change the directory.</p>
+</section>
+<section>
+  <div class="heading"><h2>Feed refresh</h2><form action="/admin/feeds/refresh" method="post"><input type="hidden" name="token" value="{{ csrf }}"><button>Refresh feeds now</button></form></div>
+  <form class="row" action="/admin/feeds/settings" method="post">
+    <input type="hidden" name="token" value="{{ csrf }}">
+    <label>Default interval in minutes <input name="interval" type="number" min="5" max="10080" value="{{ feed_interval }}" required></label>
+    <button>Save interval</button>
+  </form>
+  {% if feeds %}
+  <ul>{% for feed in feeds %}<li><strong>{{ feed.title }}</strong><br><small>Last checked · {{ feed.last_checked|local_time }}{% if feed.error %} · {{ feed.error }}{% endif %}</small></li>{% endfor %}</ul>
+  {% else %}<p class="subtle">No active subscriptions.</p>{% endif %}
+</section>
+<section>
+  <h2>Accounts</h2>
+  <form action="/admin/accounts" method="post">
+    <input type="hidden" name="token" value="{{ csrf }}">
+    <label>Username <input name="username" maxlength="64" required></label>
+    <button>Create local account</button>
+  </form>
+  <ul>{% for account in accounts %}<li>{{ account.username or account.name or account.email }}<br><small>{{ account.id }}</small></li>{% endfor %}</ul>
+  {% if configured %}
+  <h2>Google accounts</h2>
+  <form action="/admin/access" method="post">
+    <input type="hidden" name="token" value="{{ csrf }}">
+    <label>Google account email <input name="email" type="email" placeholder="reader@example.com" required></label>
+    <button name="action" value="allow">Allow sign-in</button>
+  </form>
+  {% if allowed %}<ul>{% for email in allowed %}<li class="row">{{ email }}
+    <form action="/admin/access" method="post"><input type="hidden" name="token" value="{{ csrf }}"><input type="hidden" name="email" value="{{ email }}"><button name="action" value="remove">Remove</button></form>
+  </li>{% endfor %}</ul>{% endif %}
+  {% endif %}
+</section>
+<section class="full">
+  <h2>Background jobs</h2>
+  {% if jobs %}
+  <table>
+    <thead><tr><th scope="col">Job</th><th scope="col">Status</th><th scope="col">Action</th></tr></thead>
+    <tbody>{% for job in jobs %}<tr>
+      <td>{{ {'refresh': 'Feed refresh', 'older': 'Older articles', 'extract': 'Reader extraction', 'backup': 'Backup'}.get(job.kind, job.kind) }}<small>#{{ job.id }} · {{ job.target }}</small></td>
+      <td>{{ job.status|capitalize }}{% if job.error %}<small>{{ job.error }}</small>{% endif %}</td>
+      <td>{% if job.status == 'failed' %}<form action="/admin/jobs/{{ job.id }}/retry" method="post"><input type="hidden" name="token" value="{{ csrf }}"><button>Retry</button></form>{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table>
+  {% else %}<p class="subtle">No pending or failed jobs.</p>{% endif %}
+</section>
+</div>
+{% endif %}
+</main>
+</body>
+</html>

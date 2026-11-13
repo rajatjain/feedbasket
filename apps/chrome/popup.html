@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>FeedBasket</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+<header>
+  <span class="brand-icon" aria-hidden="true"></span><strong class="wordmark"><span>Feed</span>Basket</strong>
+  <button id="sync" type="button" aria-label="Check backend connection" title="Check backend connection"><span id="connection" class="connection-dot" aria-hidden="true"></span></button>
+  <button type="button" id="settings-toggle" aria-expanded="false" aria-controls="settings" aria-label="Settings" title="Settings">⚙</button>
+</header>
+<p id="notice" role="status"></p>
+<form id="settings" hidden>
+  <label>Backend API URL<input id="origin" type="url" required></label>
+  <div class="row">
+    <label>Theme<select id="theme"><option value="system">Follow system</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+    <label>Accent<select id="accent"><option value="green">Green</option><option value="blue">Blue</option><option value="violet">Violet</option><option value="rose">Rose</option><option value="amber">Amber</option></select></label>
+  </div>
+  <button class="primary">Save settings</button>
+</form>
+<form id="save" hidden>
+  <div class="page-info"><h1 id="article">Current article</h1><p id="source"></p></div>
+  <div class="tag-editor">
+    <label for="tags">Tags <span class="muted">Optional</span></label>
+    <div id="selected-tags" role="group" aria-label="Selected tags" hidden></div>
+    <div class="tag-entry">
+      <input id="tags" type="text" placeholder="Find or create a tag" autocomplete="off" maxlength="2450">
+      <button id="add-tag" type="button" disabled>Add</button>
+    </div>
+    <div id="tag-suggestions" hidden>
+      <div class="tag-list-heading"><span id="tag-heading">Your tags</span><span id="tag-count-heading">Articles</span></div>
+      <ul id="suggested-tags" class="tag-list" aria-labelledby="tag-heading"></ul>
+    </div>
+    <details id="more-tags" hidden><summary>More tags</summary><ul id="other-tags" class="tag-list" aria-label="More tags"></ul></details>
+    <p id="tag-feedback" role="status" hidden></p>
+  </div>
+  <div id="feed-row" class="feed" hidden><span class="feed-icon" aria-hidden="true"></span><div><strong id="feed-title"></strong><span class="muted">RSS feed</span></div></div>
+  <label id="feed-picker-row" hidden>Feed<select id="feed-picker"></select></label>
+  <div id="manual-feed" hidden>
+    <label for="feed-url">Feed URL</label>
+    <input id="feed-url" type="text" inputmode="url" autocomplete="off" maxlength="4000" placeholder="https://example.com/rss.xml" aria-describedby="feed-hint">
+    <p id="feed-hint" role="status"></p>
+  </div>
+  <button id="save-button" class="primary" disabled>Save article</button>
+  <div id="feed-actions">
+    <button id="subscribe-button" type="submit" value="subscribe" disabled>Subscribe to feed</button>
+    <button id="save-subscribe-button" type="submit" value="both" disabled>Save + subscribe</button>
+  </div>
+  <p id="action-feedback" role="status"></p>
+</form>
+<section id="queue" hidden><h2>Waiting to sync</h2><ul id="queue-list"></ul></section>
+<form id="connect">
+  <label>Username<input id="username" maxlength="64" required autocomplete="username"></label>
+  <div class="row"><button class="primary" value="connect">Sign in</button><button value="signup">Create account</button></div>
+</form>
+<footer><span id="profile"></span><button id="auth" type="button" hidden>Sign out</button></footer>
+<details id="diagnostics">
+  <summary>Diagnostics</summary>
+  <pre id="log-output"></pre>
+  <button id="copy-logs" type="button">Copy logs</button>
+</details>
+<script type="module" src="popup.js"></script>
+</body>
+</html>
