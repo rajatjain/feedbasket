@@ -1,5 +1,46 @@
 import SwiftUI
 
+struct ArticleBatchBar: View {
+    @Environment(\.basketStyle) private var style
+    let articles: [Article]
+    let clear: () -> Void
+    let perform: (ArticleBatchAction) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("\(articles.count) selected").fontWeight(.semibold)
+                Spacer()
+                Button("Clear", action: clear).buttonStyle(.link)
+            }
+            ViewThatFits(in: .horizontal) {
+                actions(.titleAndIcon).fixedSize(horizontal: true, vertical: false)
+                actions(.iconOnly)
+            }
+        }
+        .font(.system(size: BasketTokens.labelSize))
+        .padding(.horizontal, BasketTokens.spacing)
+        .padding(.vertical, 6)
+        .background(style.color(BasketTokens.subtle))
+    }
+
+    private func actions<Style: LabelStyle>(_ labelStyle: Style) -> some View {
+        HStack(spacing: 5) {
+            ForEach(ArticleBatchAction.allCases, id: \.self) { action in
+                Button(role: action == .trash ? .destructive : nil) {
+                    perform(action)
+                } label: {
+                    Label(action.title, systemImage: action.icon).labelStyle(labelStyle)
+                }
+                .help(action.title)
+                .disabled(!articles.contains(where: action.allows))
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+    }
+}
+
 struct ArticleRow: View {
     @Environment(\.basketStyle) private var style
     let article: Article

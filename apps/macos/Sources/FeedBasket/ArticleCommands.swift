@@ -33,6 +33,61 @@ enum ArticleAction: CaseIterable {
     }
 }
 
+enum ArticleBatchAction: CaseIterable {
+    case read, archive, trash
+
+    var title: String {
+        switch self {
+        case .read: "Mark as read"
+        case .archive: "Archive"
+        case .trash: "Trash"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .read: "envelope.open"
+        case .archive: "archivebox"
+        case .trash: "trash"
+        }
+    }
+
+    func allows(_ article: Article) -> Bool {
+        switch self {
+        case .read: !article.read
+        case .archive: ArticleAction.archive.allows(article)
+        case .trash: ArticleAction.dislike.allows(article)
+        }
+    }
+
+    func mutation(for article: Article) -> Mutation {
+        switch self {
+        case .read: Mutation(articleID: article.id, read: true)
+        case .archive: Mutation(articleID: article.id, action: "archive")
+        case .trash: Mutation(articleID: article.id, action: "trash")
+        }
+    }
+
+    func inverse(for article: Article) -> Mutation? {
+        switch self {
+        case .read where article.read: Mutation(articleID: article.id, read: false)
+        case .archive where article.location == "archive": Mutation(articleID: article.id, action: "restore_inbox")
+        case .trash where article.location == "trash": Mutation(articleID: article.id, action: article.trash_origin == "archive"
+            ? "restore_archive" : "restore_inbox")
+        default: nil
+        }
+    }
+
+    func confirmation(count: Int) -> String {
+        let quantity = count == 1 ? "1 article" : "\(count) articles"
+        switch self {
+        case .read: return "\(quantity) marked as read"
+        case .archive: return "\(quantity) archived"
+        case .trash: return "\(quantity) moved to Trash"
+        }
+    }
+}
+
 struct SelectedArticleActions {
     let article: Article
     let perform: (ArticleAction) -> Void
@@ -71,7 +126,7 @@ struct ArticleCommands: Commands {
     }
 }
 
-struct TrashUndoShortcut: NSViewRepresentable {
+struct ArticleUndoShortcut: NSViewRepresentable {
     let undo: () -> Void
 
     func makeNSView(context: Context) -> ShortcutView { ShortcutView() }
@@ -124,7 +179,7 @@ struct ArticleShortcutList: View {
                 }
             }
             GridRow {
-                Text("Undo move to Trash")
+                Text("Undo bulk action or move to Trash")
                 Text("⌘Z").monospaced().gridColumnAlignment(.trailing)
             }
         }

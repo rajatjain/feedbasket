@@ -12,6 +12,12 @@ FeedBasket is
 - Fully self-hosted.
 - You fully own the data.
 
+## Screenshot
+
+RSS reader on macOS with sample articles and feeds.
+
+![FeedBasket in light mode with subscriptions, an article list, and a clean reading pane](docs/screenshots/mac-rss.webp)
+
 ## 1. Start the backend
 
 From the repo root, copy `.env.example` to `.env` and set `ADMIN_USER` and `ADMIN_PASSWORD`. Git ignores `.env`. Set `DB_DIR`, `LOGS_DIR`, and `BACKUP_DIR` there using absolute paths. Both launch methods use those folders. The database file is `feedbasket.sqlite`. Stop one backend before starting the other.

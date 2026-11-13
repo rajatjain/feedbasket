@@ -19,7 +19,7 @@ final class BasketStore {
     private(set) var sessionRevision = UUID()
     var storage: Storage?
     private(set) var toasts: [BasketToast.Location: BasketToast] = [:]
-    private var lastTrashedArticleID: String?
+    private var articleUndo: (action: ArticleBatchAction, ids: [String], location: BasketToast.Location)?
 
     @ObservationIgnored private var token: String?
     @ObservationIgnored private var needsSignIn = false
@@ -58,7 +58,7 @@ final class BasketStore {
     private func loadScope() {
         updateScope = UUID()
         syncIssue = nil
-        lastTrashedArticleID = nil
+        articleUndo = nil
         clearToasts()
         setToken(nil)
         needsSignIn = false
@@ -91,7 +91,7 @@ final class BasketStore {
         toastTasks[location]?.cancel()
         let notice = BasketToast(text: text, icon: icon, action: action)
         toasts[location] = notice
-        AccessibilityNotification.Announcement(action == .undoTrash ? text + ". Press Command Z to undo." : text).post()
+        AccessibilityNotification.Announcement(action == .undoArticleChange ? text + ". Press Command Z to undo." : text).post()
         toastTasks[location] = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(3)) }
             catch { return }
@@ -133,7 +133,7 @@ final class BasketStore {
         guard let disk else { return }
         try disk.save(snapshot)
         library = snapshot
-        if lastTrashedArticleID != nil && !canUndoTrash { clearTrashUndo() }
+        if articleUndo != nil && !canUndoArticleChange { clearArticleUndo() }
     }
 
     func refresh(followUp: Bool = false) async {
@@ -313,7 +313,7 @@ final class BasketStore {
         syncIssue = nil
         Diagnostics.write("Account connected")
         updateScope = UUID()
-        lastTrashedArticleID = nil
+        articleUndo = nil
         clearToasts()
         await refresh()
     }
@@ -328,45 +328,74 @@ final class BasketStore {
         await refresh()
     }
 
-    var canUndoTrash: Bool {
-        guard let lastTrashedArticleID else { return false }
-        return article(lastTrashedArticleID)?.location == "trash"
-    }
-
-    private func clearTrashUndo() {
-        lastTrashedArticleID = nil
-        if toasts[.reader]?.action == .undoTrash { clearToast(at: .reader) }
-    }
-
-    func undoTrash() {
-        guard canUndoTrash, let lastTrashedArticleID else { return }
-        if change(Mutation(articleID: lastTrashedArticleID, action: "restore")) {
-            notify("Restored from Trash")
+    var canUndoArticleChange: Bool {
+        guard let articleUndo else { return false }
+        return articleUndo.ids.contains { id in
+            article(id).flatMap { articleUndo.action.inverse(for: $0) } != nil
         }
+    }
+
+    private func clearArticleUndo() {
+        if let location = articleUndo?.location, toasts[location]?.action == .undoArticleChange {
+            clearToast(at: location)
+        }
+        articleUndo = nil
+    }
+
+    private func rememberArticleUndo(_ action: ArticleBatchAction, ids: [String], at location: BasketToast.Location,
+                                     message: String) {
+        clearArticleUndo()
+        articleUndo = (action, ids, location)
+        notify(message, icon: action.icon, at: location, action: .undoArticleChange)
+    }
+
+    func undoArticleChange() {
+        guard let articleUndo else { return }
+        let mutations = articleUndo.ids.compactMap(article).compactMap(articleUndo.action.inverse)
+        if queueChanges(mutations, at: articleUndo.location) {
+            clearArticleUndo()
+            let message = articleUndo.location == .reader ? "Restored from Trash" : "Undid \(articleUndo.action.title.lowercased())"
+            notify(message, at: articleUndo.location)
+        }
+    }
+
+    func changeArticles(_ ids: [String], action: ArticleBatchAction) -> Bool {
+        let articles = ids.compactMap(article).filter(action.allows)
+        guard queueChanges(articles.map(action.mutation), at: .articleList) else { return false }
+        rememberArticleUndo(action, ids: articles.map(\.id), at: .articleList, message: action.confirmation(count: articles.count))
+        return true
     }
 
     @discardableResult
     func change(_ mutation: Mutation, automatic: Bool = false) -> Bool {
         guard profile != nil, let current = article(mutation.articleID) else { return false }
+        var mutation = mutation
+        // Persist an absolute restore target so a network retry cannot restore twice.
+        if mutation.action == "restore" {
+            mutation.action = current.location == "trash" && current.trash_origin == "archive"
+                ? "restore_archive" : "restore_inbox"
+        }
+        guard queueChanges([mutation], automatic: automatic) else { return false }
+        if mutation.action == "trash" && current.location != "trash" {
+            rememberArticleUndo(.trash, ids: [current.id], at: .reader, message: "Moved to Trash")
+        }
+        return true
+    }
+
+    private func queueChanges(_ mutations: [Mutation], automatic: Bool = false,
+                              at location: BasketToast.Location = .reader) -> Bool {
+        guard profile != nil, disk != nil, !mutations.isEmpty else { return false }
         do {
             var next = library
-            var mutation = mutation
-            // Persist an absolute restore target so a network retry cannot restore twice.
-            if mutation.action == "restore" {
-                mutation.action = current.location == "trash" && current.trash_origin == "archive"
-                    ? "restore_archive" : "restore_inbox"
-            }
-            next.pending.append(mutation)
+            next.pending.append(contentsOf: mutations)
             try persist(next)
-            Diagnostics.write("Article change queued \(mutation.logDetails) automatic=\(automatic)")
-            if mutation.action == "trash" && current.location != "trash" {
-                lastTrashedArticleID = current.id
-                notify("Moved to Trash", icon: "trash", action: .undoTrash)
+            for mutation in mutations {
+                Diagnostics.write("Article change queued \(mutation.logDetails) automatic=\(automatic)")
             }
             Task { await refresh(followUp: true) }
             return true
         } catch {
-            report(error)
+            report(error, at: location)
             return false
         }
     }

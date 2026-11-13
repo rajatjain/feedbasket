@@ -24,7 +24,7 @@ struct LibraryWindow: View {
     @AppStorage("readStatusFilter") private var readFilter = "All"
     @AppStorage("showAllSidebarFeeds") private var showAllSidebarFeeds = false
     @BasketState private var shelf: Shelf? = .rss
-    @BasketState private var selected: String? = nil
+    @BasketState private var selection: Set<String> = []
     @BasketState private var scrollTarget: String? = nil
     @BasketState private var columns: NavigationSplitViewVisibility = NavigationSplitViewVisibility.all
     @BasketState private var showSubscriptions: Bool = true
@@ -37,7 +37,7 @@ struct LibraryWindow: View {
     @BasketState private var username = ""
 
     private var current: Shelf { shelf ?? .rss }
-    private var selectedArticle: Article? { visible.prefix(limit).first { $0.id == selected } }
+    private var selected: String? { selection.count == 1 ? selection.first : nil }
     private var hasSourceFilter: Bool { [.starred, .archive, .trash].contains(current) }
     private var feeds: [Feed] {
         store.library.feeds.values.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
@@ -65,9 +65,9 @@ struct LibraryWindow: View {
                     : article.location == (current == .archive ? "archive" : "trash")
                 return matchesShelf && (source == "All" || (source == "Subscriptions" && rss) || (source == "Read Later" && saved))
             }
-            // Keep the open article in the list when its read status changes.
+            // Keep selected articles visible if auto-read or sync changes their read status.
             guard article.location == "inbox",
-                  article.id == selected || matchesReadFilter(article) else { return false }
+                  selection.contains(article.id) || matchesReadFilter(article) else { return false }
             switch current {
             case .rss: return rss
             case .feed(let id): return article.feed_ids.contains(id) && store.library.feeds[id] != nil
@@ -85,11 +85,15 @@ struct LibraryWindow: View {
     }
 
     var body: some View {
-        let article = selectedArticle
+        let articles = visible
+        let displayed = articles.prefix(limit)
+        let selectedArticles = displayed.filter { selection.contains($0.id) }
+        let article = selectedArticles.count == 1 && selection.count == 1 ? selectedArticles.first : nil
         NavigationSplitView(columnVisibility: $columns) {
             sidebar.navigationSplitViewColumnWidth(min: 155, ideal: 182, max: 250)
         } content: {
-            list.navigationSplitViewColumnWidth(min: 230, ideal: 285, max: 380)
+            articleList(articles, selectedArticles: selectedArticles)
+                .navigationSplitViewColumnWidth(min: 230, ideal: 285, max: 380)
         } detail: {
             Group {
                 if let article {
@@ -105,6 +109,8 @@ struct LibraryWindow: View {
                             .disabled(!store.reachable)
                     }
                     .disabled(store.signingIn)
+                } else if selectedArticles.count > 1 {
+                    BasketEmpty(title: "\(selectedArticles.count) articles selected", icon: "doc.on.doc")
                 } else {
                     BasketEmpty(title: "Select an article", icon: "doc.text")
                 }
@@ -117,16 +123,17 @@ struct LibraryWindow: View {
         .navigationSplitViewStyle(.balanced)
         .toolbarBackground(.hidden, for: .windowToolbar)
         .background {
-            if store.canUndoTrash {
-                TrashUndoShortcut(undo: store.undoTrash)
+            if store.canUndoArticleChange {
+                ArticleUndoShortcut(undo: store.undoArticleChange)
             }
         }
-        .onChange(of: shelf) { selected = nil; scrollTarget = nil; source = "All"; limit = 100 }
+        .onChange(of: shelf) { selection = []; scrollTarget = nil; source = "All"; limit = 100 }
         .onChange(of: readFilter) {
-            if let article, !matchesReadFilter(article) { selected = nil }
+            if selection.count > 1 || article.map({ !matchesReadFilter($0) }) == true { selection = [] }
         }
-        .onChange(of: store.profile?.id) { shelf = .rss; selected = nil; username = "" }
-        .onChange(of: store.updateScope) { addingFeed = false; scrollTarget = nil }
+        .onChange(of: displayed.map(\.id)) { _, ids in selection.formIntersection(ids) }
+        .onChange(of: store.profile?.id) { shelf = .rss; selection = []; username = "" }
+        .onChange(of: store.updateScope) { addingFeed = false; selection = []; scrollTarget = nil }
         .alert("Sign in", isPresented: $showingSignIn) {
             TextField("Username", text: $username)
             Button("Sign in") { store.signIn(username) }
@@ -347,8 +354,7 @@ struct LibraryWindow: View {
         }.buttonStyle(.plain)
     }
 
-    private var list: some View {
-        let articles = visible
+    private func articleList(_ articles: [Article], selectedArticles: [Article]) -> some View {
         return VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: BasketTokens.spacing) {
                 HStack {
@@ -370,6 +376,12 @@ struct LibraryWindow: View {
                 }
             }.padding(BasketTokens.spacing * 1.4)
             Divider()
+            if selectedArticles.count > 1 {
+                ArticleBatchBar(articles: selectedArticles, clear: { selection = [] }) { action in
+                    performBatch(action, on: selectedArticles)
+                }
+                Divider()
+            }
             if articles.isEmpty {
                 if let feed = currentFeed {
                     emptyFeed(feed)
@@ -381,20 +393,13 @@ struct LibraryWindow: View {
                 }
             } else {
                 ScrollViewReader { proxy in
-                    List(selection: $selected) {
+                    List(selection: $selection) {
                         ForEach(articles.prefix(limit)) { article in
                             ArticleRow(article: article, archive: hasSourceFilter)
                                 .tag(article.id)
-                                .contextMenu {
-                                    ForEach(ArticleAction.allCases, id: \.self) { action in
-                                        if action.allows(article) {
-                                            Button(action.title(for: article)) { perform(action, on: article) }
-                                        }
-                                    }
-                                }
                         }
                         if articles.count > limit {
-                            Button("Show more") { limit += 100 }.buttonStyle(BasketButton())
+                            Button("Show more") { limit += 100 }.buttonStyle(BasketButton()).selectionDisabled()
                         } else if let feed = currentFeed, feed.error != nil || (!feed.isWebsite && feed.initial_done) {
                             FeedHistoryFooter(feed: feed).id(feed.id)
                                 .padding(.vertical, BasketTokens.spacing)
@@ -402,6 +407,24 @@ struct LibraryWindow: View {
                         }
                     }
                     .listStyle(.plain)
+                    .contextMenu(forSelectionType: String.self) { ids in
+                        let targets = articles.prefix(limit).filter { ids.contains($0.id) }
+                        if targets.count == 1, let article = targets.first {
+                            ForEach(ArticleAction.allCases, id: \.self) { action in
+                                if action.allows(article) {
+                                    Button(action.title(for: article)) { perform(action, on: article) }
+                                }
+                            }
+                        } else if targets.count > 1 {
+                            ForEach(ArticleBatchAction.allCases, id: \.self) { action in
+                                Button(action.title, role: action == .trash ? .destructive : nil) {
+                                    performBatch(action, on: targets)
+                                }
+                                .disabled(!targets.contains(where: action.allows))
+                            }
+                        }
+                    }
+                    .onExitCommand { selection = [] }
                     .task(id: scrollTarget) { [target = scrollTarget] in
                         guard let target else { return }
                         await Task.yield()
@@ -412,6 +435,7 @@ struct LibraryWindow: View {
                 }
             }
         }
+        .modifier(BasketToastOverlay(location: .articleList))
     }
 
     private var readStatusPicker: some View {
@@ -461,12 +485,20 @@ struct LibraryWindow: View {
 
             if articles.indices.contains(nextIndex) {
                 limit = max(limit, nextIndex + 1)
-                selected = articles[nextIndex].id
-                scrollTarget = selected
+                let next = articles[nextIndex].id
+                selection = [next]
+                scrollTarget = next
             } else {
-                selected = nil
+                selection = []
                 scrollTarget = nil
             }
+        }
+    }
+
+    private func performBatch(_ action: ArticleBatchAction, on articles: [Article]) {
+        if store.changeArticles(articles.map(\.id), action: action) {
+            selection = []
+            scrollTarget = nil
         }
     }
 

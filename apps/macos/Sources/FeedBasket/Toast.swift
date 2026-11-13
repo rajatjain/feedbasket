@@ -1,8 +1,8 @@
 import SwiftUI
 
 struct BasketToast: Identifiable {
-    enum Location: Hashable { case reader, settings }
-    enum Action { case undoTrash }
+    enum Location: Hashable { case reader, articleList, settings }
+    enum Action { case undoArticleChange }
 
     let id = UUID()
     let text: String
@@ -23,10 +23,10 @@ struct BasketToastOverlay: ViewModifier {
                 HStack(spacing: 12) {
                     Label(toast.text, systemImage: toast.icon)
                         .fixedSize(horizontal: false, vertical: true)
-                    if toast.action == .undoTrash && store.canUndoTrash {
-                        Button("Undo", action: store.undoTrash)
+                    if toast.action == .undoArticleChange && store.canUndoArticleChange {
+                        Button("Undo", action: store.undoArticleChange)
                             .buttonStyle(BasketButton())
-                            .help("Undo Move to Trash (⌘Z)")
+                            .help("Undo article change (⌘Z)")
                     }
                 }
                 .padding(.horizontal, 12).padding(.vertical, 7)
