@@ -16,8 +16,14 @@ header { border-bottom: 1px solid var(--line); padding-bottom: 9px; color: var(-
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .brand-icon { background-image: url("assets/brand-dark.png"); }
 }
-.wordmark { flex: 1; color: var(--text); font-size: 19px; font-weight: 900; letter-spacing: -.6px; }
-.wordmark span { color: var(--accent); }
+.wordmark {
+  flex: 1;
+  color: var(--accent);
+  font-family: ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -.65px;
+}
 header button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; font-size: 17px; }
 .connection-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .connection-dot[data-online="true"] { background: #1a8545; }

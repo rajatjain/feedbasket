@@ -170,9 +170,10 @@ struct FeedBasketWordmark: View {
                     .frame(width: 25, height: 25)
                     .accessibilityHidden(true)
             }
-            Text("\(Text("Feed").foregroundStyle(style.accent))\(Text("Basket").foregroundStyle(style.color(BasketTokens.text)))")
-                .font(.system(size: 22, weight: .black))
-                .tracking(-0.8)
+            Text("feedbasket")
+                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .foregroundStyle(style.accent)
+                .tracking(-0.65)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
                 .accessibilityAddTraits(.isHeader)
