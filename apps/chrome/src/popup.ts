@@ -1,9 +1,8 @@
 import { palettes } from "./palettes.js";
 import { apiOrigin, defaultSettings, isPDFURL, request, webURL } from "./api.js";
-import type { DeliveryUpdate, FeedChoice, LinkPreview, QueuedAction, Session, Settings } from "./api.js";
+import type { DeliveryUpdate, ExtensionState as State, FeedChoice, LinkPreview, QueuedAction, Settings } from "./api.js";
 import { tagPicker } from "./tags.js";
 
-type State = { settings: Settings; online: boolean; session?: Session; queue: QueuedAction[] };
 const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const input = (id: string) => el<HTMLInputElement>(id);
 const button = (id: string) => el<HTMLButtonElement>(id);
@@ -25,14 +24,15 @@ function render(state: State) {
   paint(state.settings);
   el("connection").dataset.online = String(state.online);
   const connection = `${state.online ? "Backend reachable" : "Backend offline"}. Check now`;
+  el("connection-label").textContent = state.online ? "Backend reachable" : "Backend offline";
   button("sync").title = connection;
   button("sync").setAttribute("aria-label", connection);
   el("profile").textContent = state.session?.profile.username || state.session?.profile.name || "";
-  button("auth").hidden = !state.session;
+  el("account").hidden = !state.session;
   el("connect").hidden = Boolean(state.session);
   input("username").disabled = !state.online;
   for (const control of el("connect").querySelectorAll("button")) control.disabled = !state.online;
-  el("save").hidden = !state.session;
+  el("save").hidden = !state.session || !el("settings").hidden;
   renderActions();
   const list = el("queue-list");
   list.replaceChildren();
@@ -61,7 +61,7 @@ function queueButton(label: string, type: string, item: QueuedAction) {
 function report(error: unknown) { note(error instanceof Error ? error.message : "Request failed."); }
 
 let tab: chrome.tabs.Tab | undefined;
-let current: State = { settings: defaultSettings, online: false, queue: [] };
+let current: State = { settings: defaultSettings, online: false, queue: [], recentTags: [] };
 let valid = false;
 let detected: LinkPreview["kind"] | undefined;
 let checkedOnline = false;
@@ -73,7 +73,6 @@ let feedRequest = 0;
 let findingFeeds = false;
 const picker = select("feed-picker");
 const tags = tagPicker();
-let tagSession: Session | undefined;
 let tagRequest = 0;
 
 function savingPDF() { return detected === "pdf" || input("save-as-pdf").checked; }
@@ -101,39 +100,31 @@ function updateDelivery(delivery: DeliveryUpdate) {
 select("accent").replaceChildren(...palettes.map(({id, label}) => new Option(label, id)));
 
 function selectedFeed(): FeedChoice | undefined {
-  const manual = input("feed-url").value.trim();
-  if (!manual) return picker.value ? { url: picker.value, title: picker.selectedOptions[0]?.text ?? "" } : undefined;
-  try {
-    const url = webURL(manual);
-    if (!isPDFURL(url)) return { url: url.href, title: "" };
-  } catch { /* The user may still be entering a URL. */ }
+  const selected = picker.selectedOptions[0];
+  return selected ? { url: selected.value, title: selected.text } : undefined;
 }
 
 function renderActions() {
-  const manual = Boolean(input("feed-url").value.trim());
-  const hasDiscoveredFeed = Boolean(picker.value) && !manual;
-  const hasFeed = Boolean(selectedFeed());
+  const feed = selectedFeed();
   const pdf = savingPDF();
-  const feedOnly = detected === "feed";
+  const feedOnly = !pdf && detected === "feed";
   const supported = valid && detected !== "unsupported";
-  const canSubscribe = supported && !pdf;
+  const canSubscribe = supported && !pdf && Boolean(feed);
   const disabled = submitting || !supported || !current.session;
   button("save-button").disabled = disabled || (findingFeeds && !pdf);
   button("save-button").hidden = !supported || feedOnly;
-  button("save-button").textContent = pdf ? "Save PDF link" : "Save article";
+  button("save-button").textContent = pdf ? "Save PDF link" : "Save";
   button("save-subscribe-button").hidden = feedOnly;
-  button("subscribe-button").disabled = disabled || !hasFeed;
-  button("save-subscribe-button").disabled = disabled || !hasFeed;
+  button("subscribe-button").classList.toggle("primary", feedOnly);
+  button("subscribe-button").disabled = disabled || !canSubscribe || findingFeeds;
+  button("save-subscribe-button").disabled = disabled || !canSubscribe || findingFeeds;
   el("tag-editor").hidden = !supported || feedOnly;
-  el("pdf-override").hidden = !supported || detected !== undefined || findingFeeds;
+  el("pdf-override").hidden = !current.session || !supported || detected !== undefined || findingFeeds;
   el("feed-actions").hidden = !canSubscribe;
-  el("feed-row").hidden = !canSubscribe || !hasDiscoveredFeed;
-  el("feed-title").textContent = picker.selectedOptions[0]?.text ?? "";
-  el("feed-picker-row").hidden = !canSubscribe || !hasDiscoveredFeed || picker.options.length < 2;
-  el("manual-feed").hidden = !canSubscribe || hasDiscoveredFeed;
-  el("feed-hint").textContent = findingFeeds ? "Checking this page…" : hasFeed ? ""
-    : manual ? "Enter a valid RSS or Atom feed URL."
-      : "No feed found automatically. Paste an RSS or Atom feed URL to subscribe.";
+  el("feed-row").hidden = !canSubscribe;
+  el("feed-title").textContent = feed?.title ?? "";
+  el("feed-picker-row").hidden = !canSubscribe || picker.options.length < 2;
+  el("checking-page").hidden = !findingFeeds || pdf;
 }
 
 function loadTags() {
@@ -143,12 +134,12 @@ function loadTags() {
   void request<({ name: string; count: number } | string)[]>(session.origin, "/api/v1/tags?ranked=true", session.token)
     .then(values => {
       if (sequence !== tagRequest) return;
-      tags.setTags(values.map(value => typeof value === "string" ? { name: value, count: null } : value));
+      tags.setTags(values.map(value => typeof value === "string" ? value : value.name));
     }).catch(() => { /* Tags can still be entered manually while the backend is unavailable. */ });
 }
 
 async function findFeeds() {
-  if (!valid || tab?.id === undefined || !tab.url || detected === "pdf" || findingFeeds) return;
+  if (!valid || tab?.id === undefined || !tab.url || detected === "pdf" || findingFeeds || checkedOnline) return;
   const sequence = ++feedRequest;
   const { online, session } = current;
   findingFeeds = true;
@@ -167,7 +158,7 @@ async function findFeeds() {
     feeds = page?.feeds ?? [];
   } catch { /* Chrome restricts injection on some tabs. */ }
   if (sequence !== feedRequest) return;
-  if (detected !== "pdf" && online && session && !checkedOnline) {
+  if (detected !== "pdf" && online && session) {
     try {
       checkedOnline = true;
       const preview = await request<LinkPreview>(session.origin, "/api/v1/links/preview?url=" + encodeURIComponent(tab.url),
@@ -202,7 +193,7 @@ async function findFeeds() {
 
 function update(state: State) {
   const wasOnline = current.online;
-  const changedSession = tagSession?.origin !== state.session?.origin || tagSession?.token !== state.session?.token;
+  const changedSession = current.session?.origin !== state.session?.origin || current.session?.token !== state.session?.token;
   current = state;
   if (changedSession) {
     ++tagRequest;
@@ -211,10 +202,10 @@ function update(state: State) {
     checkedOnline = false;
     if (detected !== "pdf") detected = undefined;
     picker.replaceChildren();
-    input("feed-url").value = "";
-    tagSession = state.session;
+    input("save-as-pdf").checked = false;
     tags.reset();
   }
+  tags.setRecent(state.recentTags);
   render(state);
   if (changedSession || !wasOnline) loadTags();
   if ((changedSession || !wasOnline) && state.session) void findFeeds();
@@ -223,13 +214,16 @@ button("settings-toggle").onclick = () => {
   const form = el("settings");
   form.hidden = !form.hidden;
   button("settings-toggle").setAttribute("aria-expanded", String(!form.hidden));
-  if (!form.hidden && current) {
+  el("save").hidden = !current.session || !form.hidden;
+  tags.close();
+  if (!form.hidden) {
     input("origin").value = current.settings.origin;
     select("theme").value = current.settings.theme;
     select("accent").value = current.settings.accent;
   }
+  renderActions();
 };
-el<HTMLFormElement>("settings").onsubmit = event => {
+el<HTMLFormElement>("settings-form").onsubmit = event => {
   event.preventDefault();
   void (async () => {
     const origin = apiOrigin(input("origin").value);
@@ -258,8 +252,7 @@ button("sync").onclick = () => {
   void send<State>({ type: "sync" }).then(state => { update(state); loadTags(); }).then(findFeeds).catch(report);
 };
 picker.onchange = renderActions;
-input("feed-url").oninput = renderActions;
-input("save-as-pdf").onchange = renderActions;
+input("save-as-pdf").onchange = () => { renderActions(); button("settings-toggle").click(); };
 el<HTMLFormElement>("save").onsubmit = event => {
   event.preventDefault();
   if (submitting || !valid || !tab?.url || !current.session || detected === "unsupported") return;
@@ -268,7 +261,7 @@ el<HTMLFormElement>("save").onsubmit = event => {
   const both = action === "both";
   const feed = selectedFeed();
   const pdf = savingPDF();
-  if ((pdf && (subscribeOnly || both)) || (detected === "feed" && !subscribeOnly) || (findingFeeds && !pdf && !subscribeOnly)) return;
+  if ((pdf && (subscribeOnly || both)) || (detected === "feed" && !subscribeOnly) || (findingFeeds && !pdf)) return;
   if ((subscribeOnly || both) && !feed) return;
 
   let message: object;
@@ -304,21 +297,9 @@ chrome.runtime.onMessage.addListener((delivery: DeliveryUpdate, sender) => {
   if (confirmation) updateDelivery(delivery);
   else earlyDeliveries.set(delivery.id, delivery);
 });
-async function showLogs() {
-  const result = await chrome.storage.local.get("diagnostics");
-  const lines = (result.diagnostics ?? []) as string[];
-  el("log-output").textContent = lines.length ? lines.join("\n") : "No recent events.";
-}
-el<HTMLDetailsElement>("diagnostics").ontoggle = () => {
-  if (el<HTMLDetailsElement>("diagnostics").open) void showLogs().catch(report);
-};
-button("copy-logs").onclick = () => {
-  void navigator.clipboard.writeText(el("log-output").textContent ?? "")
-    .then(() => note("Logs copied.")).catch(report);
-};
 chrome.storage.onChanged.addListener(changes => {
-  if (changes.diagnostics && el<HTMLDetailsElement>("diagnostics").open) void showLogs().catch(report);
-  if (Object.keys(changes).some(key => key !== "diagnostics")) {
+  if (Object.keys(changes).some(key => key === "settings" || key === "session" || key === "online" ||
+      key.startsWith("save:") || key.startsWith("recent-tags:"))) {
     void send<State>({ type: "state" }).then(update).catch(report);
   }
 });

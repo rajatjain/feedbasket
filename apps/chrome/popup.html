@@ -4,46 +4,49 @@
 <body>
 <header>
   <span class="brand-icon" aria-hidden="true"></span><strong class="wordmark">feedbasket</strong>
-  <button id="sync" type="button" aria-label="Check backend connection" title="Check backend connection"><span id="connection" class="connection-dot" aria-hidden="true"></span></button>
   <button type="button" id="settings-toggle" aria-expanded="false" aria-controls="settings" aria-label="Settings" title="Settings">⚙</button>
 </header>
 <p id="notice" role="status"></p>
-<form id="settings" hidden>
-  <label>Backend API URL<input id="origin" type="url" required></label>
-  <div class="row">
-    <label>Theme<select id="theme"><option value="system">Follow system</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
-    <label>Palette<select id="accent"></select></label>
-  </div>
-  <button class="primary">Save settings</button>
-</form>
+<section id="settings" hidden>
+  <button id="sync" type="button"><span id="connection" class="connection-dot" aria-hidden="true"></span><span id="connection-label">Check connection</span></button>
+  <form id="settings-form">
+    <label>Backend API URL<input id="origin" type="url" required></label>
+    <div class="row">
+      <label>Theme<select id="theme"><option value="system">Follow system</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+      <label>Palette<select id="accent"></select></label>
+    </div>
+    <button class="primary">Save settings</button>
+  </form>
+  <label id="pdf-override" hidden><input id="save-as-pdf" type="checkbox"> Save as a PDF link</label>
+  <footer id="account" hidden><span id="profile"></span><button id="auth" type="button">Sign out</button></footer>
+</section>
 <form id="save" hidden>
   <div class="page-info"><h1 id="article">Current tab</h1><p id="source"></p></div>
   <div class="tag-editor" id="tag-editor">
-    <label for="tags">Tags <span class="muted">Optional</span></label>
-    <div id="selected-tags" role="group" aria-label="Selected tags" hidden></div>
+    <label for="tags">Tags</label>
     <div class="tag-entry">
-      <input id="tags" type="text" placeholder="Find or create a tag" autocomplete="off" maxlength="2450">
-      <button id="add-tag" type="button" disabled>Add</button>
+      <div id="selected-tags" role="group" aria-label="Selected tags" hidden></div>
+      <input id="tags" type="text" role="combobox" aria-autocomplete="list" aria-controls="suggested-tags"
+             aria-expanded="false" placeholder="Add tags…" autocomplete="off" maxlength="2450">
     </div>
     <div id="tag-suggestions" hidden>
-      <div class="tag-list-heading"><span id="tag-heading">Your tags</span><span id="tag-count-heading">Items</span></div>
-      <ul id="suggested-tags" class="tag-list" aria-labelledby="tag-heading"></ul>
+      <p id="tag-heading" aria-hidden="true"></p>
+      <ul id="suggested-tags" class="tag-list" role="listbox" aria-label="Tag suggestions"></ul>
     </div>
-    <details id="more-tags" hidden><summary>More tags</summary><ul id="other-tags" class="tag-list" aria-label="More tags"></ul></details>
     <p id="tag-feedback" role="status" hidden></p>
   </div>
-  <label id="pdf-override" hidden><input id="save-as-pdf" type="checkbox"> Save as a PDF link</label>
-  <div id="feed-row" class="feed" hidden><span class="feed-icon" aria-hidden="true"></span><div><strong id="feed-title"></strong><span class="muted">RSS feed</span></div></div>
-  <label id="feed-picker-row" hidden>Feed<select id="feed-picker"></select></label>
-  <div id="manual-feed" hidden>
-    <label for="feed-url">Feed URL</label>
-    <input id="feed-url" type="text" inputmode="url" autocomplete="off" maxlength="4000" placeholder="https://example.com/rss.xml" aria-describedby="feed-hint">
-    <p id="feed-hint" role="status"></p>
+  <div id="feed-row" class="feed" hidden>
+    <svg class="feed-icon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round">
+      <circle cx="8" cy="8" r="1" fill="currentColor"/><path d="M5.6 5.6a3.4 3.4 0 0 0 0 4.8m4.8-4.8a3.4 3.4 0 0 1 0 4.8M3.6 3.6a6.2 6.2 0 0 0 0 8.8m8.8-8.8a6.2 6.2 0 0 1 0 8.8"/>
+    </svg>
+    <div><strong id="feed-title"></strong><span class="muted">RSS feed</span></div>
   </div>
-  <button id="save-button" class="primary" disabled>Save article</button>
-  <div id="feed-actions">
-    <button id="subscribe-button" type="submit" value="subscribe" disabled>Subscribe to feed</button>
+  <label id="feed-picker-row" hidden>Feed<select id="feed-picker"></select></label>
+  <p id="checking-page" role="status" hidden>Checking this page…</p>
+  <button id="save-button" type="submit" class="primary" disabled>Save</button>
+  <div id="feed-actions" hidden>
     <button id="save-subscribe-button" type="submit" value="both" disabled>Save + subscribe</button>
+    <button id="subscribe-button" type="submit" value="subscribe" disabled>Subscribe</button>
   </div>
   <p id="action-feedback" role="status"></p>
 </form>
@@ -52,12 +55,6 @@
   <label>Username<input id="username" maxlength="64" required autocomplete="username"></label>
   <div class="row"><button class="primary" value="connect">Sign in</button><button value="signup">Create account</button></div>
 </form>
-<footer><span id="profile"></span><button id="auth" type="button" hidden>Sign out</button></footer>
-<details id="diagnostics">
-  <summary>Diagnostics</summary>
-  <pre id="log-output"></pre>
-  <button id="copy-logs" type="button">Copy logs</button>
-</details>
 <script type="module" src="popup.js"></script>
 </body>
 </html>

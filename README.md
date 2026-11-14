@@ -92,6 +92,8 @@ npm run build
 
 The default API URL is `http://127.0.0.1:12000`. If you used the CLI, set it to `http://127.0.0.1:8787` in the popup settings. The toolbar basket is bright blue when the backend is reachable and muted blue when it is offline. The badge shows queued saves.
 
+Click **Add tags…** for recent tags, or type to search your tags or create a new one. When the page offers a feed, the popup shows **Save**, **Save + subscribe**, and **Subscribe**. Open a known RSS or Atom URL directly to subscribe to it.
+
 ## 3. Build and install the Mac app
 
 You need macOS 14+ and the macOS SDK with Swift 6+ from Xcode or Command Line Tools. From the repo root:
@@ -112,7 +114,7 @@ The app defaults to port `12000`. For the CLI backend, change it to port `8787` 
 ## Save and read PDFs
 
 - **Save from macOS.** Click **+ Add** to paste a PDF link, choose a file, or drag one into the window. FeedBasket stores the URL for a linked PDF and uploads local files to Cloudflare R2. Find both under **Read Later → PDFs**, with the same tags you use for articles. When the sidebar is hidden, **+ Add** moves to the window toolbar.
-- **Save from Chrome.** Open the FeedBasket popup on a PDF tab and choose **Save PDF link**. If detection is inconclusive, select **Save as a PDF link** manually.
+- **Save from Chrome.** Open the FeedBasket popup on a PDF tab and choose **Save PDF link**. If detection is inconclusive, open the popup’s settings and select **Save as a PDF link**.
 - **Navigate and search.** Click the current page number, enter a destination, and press Return. Press **⌘F** to see the match count and move between results. Focus Mode puts page and zoom controls in a floating bar at the bottom. FeedBasket saves your reading position so you can resume from it.
 - **Highlight or underline.** Select text and choose **Highlight** or **Underline** beside the selection. Open **Library → Highlights** to jump back to a saved passage.
 - **Manage storage.** View separate article and PDF quotas in **Settings → Storage**. A saved link uses no R2 storage. To remove an upload from R2, move it to Trash and choose **Delete Permanently**.
@@ -135,7 +137,6 @@ Saved articles show up in the open Mac app as soon as it receives a backend upda
 
 - **Backend:** `feedbasket.log` in `LOGS_DIR`. It rotates at 5 MiB and keeps three previous files.
 - **Mac:** **Settings → Diagnostics** opens or copies recent logs. Files are in `~/Library/Logs/FeedBasket`. Rotation is 1 MiB with three previous files.
-- **Chrome:** Open **Diagnostics** in the popup. It keeps the last 200 entries in local extension storage.
 
 ## Tests
 

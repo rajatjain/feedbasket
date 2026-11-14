@@ -1,145 +1,190 @@
-type Tag = { name: string; count: number | null };
-
 const normalize = (name: string) => name.trim().toLowerCase();
-const featuredLimit = 5;
+const recentLimit = 3;
 
 export function tagPicker() {
-  const get = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
-  const input = get<HTMLInputElement>("tags");
-  const addButton = get<HTMLButtonElement>("add-tag");
-  const selected = get("selected-tags");
-  const suggestions = get("suggested-tags");
-  const more = get<HTMLDetailsElement>("more-tags");
-  const other = get("other-tags");
-  const feedback = get("tag-feedback");
+  const input = document.querySelector<HTMLInputElement>("#tags")!;
+  const editor = document.getElementById("tag-editor")!;
+  const selected = document.getElementById("selected-tags")!;
+  const panel = document.getElementById("tag-suggestions")!;
+  const heading = document.getElementById("tag-heading")!;
+  const list = document.getElementById("suggested-tags")!;
+  const feedback = document.getElementById("tag-feedback")!;
   const picked = new Map<string, string>();
-  let tags: Tag[] = [];
+  let tags = new Map<string, string>();
+  let recent: string[] = [];
+  let open = false;
+  let active = 0;
 
   function notify(message: string) {
     feedback.textContent = message;
     feedback.hidden = !message;
   }
 
-  function commitInput(): boolean {
-    const names = input.value.split(",").map(name => name.trim()).filter(Boolean);
-    if (!pick(names)) return false;
-    input.value = "";
-    render();
-    return true;
-  }
-
   function pick(names: string[]): boolean {
-    const additions = new Set(names.map(normalize).filter(key => !picked.has(key)));
-    if (picked.size + additions.size > 30 || [...additions].some(key => Array.from(key).length > 80)) {
+    const additions = new Map(names.map(name => {
+      const key = normalize(name);
+      return [key, tags.get(key) ?? key];
+    }));
+    const unique = [...additions].filter(([key]) => key && !picked.has(key));
+    if (picked.size + unique.length > 30 || unique.some(([, name]) => Array.from(name).length > 80)) {
       notify("Use up to 30 tags of at most 80 characters.");
       return false;
     }
-    for (const key of additions) picked.set(key, tags.find(tag => normalize(tag.name) === key)?.name ?? key);
+    for (const [key, name] of unique) picked.set(key, name);
     notify("");
     return true;
   }
 
-  function control(label: string, action: () => void) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = label;
-    button.addEventListener("click", action);
-    return button;
-  }
-
-  function row(tag: Tag) {
-    const key = normalize(tag.name);
-    const checked = picked.has(key);
-    const button = control("", () => {
-      if (picked.delete(key)) notify("");
-      else if (!pick([tag.name])) return;
-      render();
-      const target = Array.from(document.querySelectorAll<HTMLButtonElement>(".tag-list button[data-tag]"))
-        .find(candidate => candidate.dataset.tag === key);
-      (target ?? input).focus();
-    });
-    button.dataset.tag = key;
-    button.setAttribute("aria-pressed", String(checked));
-    const name = document.createElement("span");
-    name.textContent = tag.name;
-    const count = document.createElement("span");
-    count.className = "tag-count";
-    count.textContent = tag.count?.toLocaleString() ?? "";
-    if (tag.count !== null) count.setAttribute("aria-label", `${tag.count} ${tag.count === 1 ? "item" : "items"}`);
-    const mark = document.createElement("span");
-    mark.className = "tag-mark";
-    mark.textContent = checked ? "✓" : "+";
-    mark.setAttribute("aria-hidden", "true");
-    button.append(name, count, mark);
-    const item = document.createElement("li");
-    item.append(button);
-    return item;
-  }
-
-  function render() {
+  function renderSelected() {
     selected.replaceChildren();
     for (const [key, name] of picked) {
-      const chip = control(`${name} ×`, () => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.textContent = `${name} ×`;
+      chip.setAttribute("aria-label", `Remove ${name}`);
+      chip.addEventListener("click", () => {
         picked.delete(key);
         notify("");
-        render();
+        renderSelected();
         input.focus();
+        renderSuggestions();
       });
-      chip.setAttribute("aria-label", `Remove ${name}`);
       selected.append(chip);
     }
     selected.hidden = picked.size === 0;
-
-    const query = normalize(input.value);
-    const hasOverflow = tags.length > featuredLimit;
-    const matches = query ? tags.filter(tag => normalize(tag.name).includes(query)) : tags.slice(0, featuredLimit);
-    const hasCounts = tags.some(tag => tag.count !== null);
-    get("tag-heading").textContent = query ? "Matching tags" : hasOverflow && hasCounts ? "Most used tags" : "Your tags";
-    get("tag-count-heading").hidden = !matches.some(tag => tag.count !== null);
-    suggestions.replaceChildren(...matches.map(row));
-    if (query && !query.includes(",") && !picked.has(query) && !matches.some(tag => normalize(tag.name) === query)) {
-      const item = document.createElement("li");
-      const create = control(`Create “${input.value.trim()}”`, () => {
-        commitInput();
-        input.focus();
-      });
-      create.className = "create-tag";
-      item.append(create);
-      suggestions.append(item);
-    }
-    get("tag-suggestions").hidden = !suggestions.childElementCount;
-
-    more.hidden = Boolean(query) || !hasOverflow;
-    if (!more.hidden) {
-      const rest = tags.slice(featuredLimit).sort((a, b) => a.name.localeCompare(b.name));
-      more.querySelector("summary")!.textContent = `More tags (${rest.length})`;
-      other.replaceChildren(...rest.map(row));
-    }
-    addButton.disabled = !query;
   }
 
-  input.addEventListener("input", () => { notify(""); render(); });
+  function renderSuggestions() {
+    const query = normalize(input.value);
+    const byName = (a: string, b: string) => a.localeCompare(b);
+    const available = [...tags.keys()].filter(key => !picked.has(key));
+    let keys: string[] = [];
+    if (query) {
+      keys = available.filter(key => key.includes(query)).sort((a, b) =>
+        Number(b.startsWith(query)) - Number(a.startsWith(query)) || byName(a, b));
+    } else {
+      keys = recent.filter(key => !picked.has(key)).slice(0, recentLimit);
+      if (!keys.length) keys = available.slice(0, recentLimit);
+    }
+    const create = query && !query.includes(",") && !tags.has(query) && !picked.has(query);
+    const options = keys.map(key => ({ name: tags.get(key) ?? key, create: false }));
+    if (create) options.push({ name: input.value.trim(), create: true });
+    panel.hidden = !open || options.length === 0;
+    input.setAttribute("aria-expanded", String(!panel.hidden));
+    input.removeAttribute("aria-activedescendant");
+    if (panel.hidden) {
+      list.replaceChildren();
+      return;
+    }
+    heading.hidden = Boolean(query);
+    heading.textContent = keys.some(key => recent.includes(key)) ? "Recent" : "Your tags";
+    active = Math.min(active, options.length - 1);
+    list.replaceChildren(...options.map(({ name, create }, index) => {
+      const row = document.createElement("li");
+      row.id = `tag-option-${index}`;
+      row.setAttribute("role", "option");
+      row.setAttribute("aria-selected", String(index === active));
+      row.textContent = create ? `+  Create “${name}”` : name;
+      row.dataset.name = name;
+      if (create) row.className = "create-tag";
+      return row;
+    }));
+    input.setAttribute("aria-activedescendant", list.children[active].id);
+  }
+
+  function close() {
+    open = false;
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+    panel.hidden = true;
+  }
+
+  function commit(names: string[]): boolean {
+    if (!pick(names)) return false;
+    input.value = "";
+    active = 0;
+    renderSelected();
+    renderSuggestions();
+    return true;
+  }
+
+  input.addEventListener("focus", () => {
+    open = true;
+    active = 0;
+    renderSuggestions();
+  });
+  input.addEventListener("click", () => {
+    if (open) return;
+    open = true;
+    active = 0;
+    renderSuggestions();
+  });
+  input.addEventListener("input", () => {
+    open = true;
+    active = 0;
+    notify("");
+    renderSuggestions();
+  });
+  input.addEventListener("focusout", close);
+  list.addEventListener("mousedown", event => event.preventDefault());
+  list.addEventListener("click", event => {
+    const row = (event.target as HTMLElement).closest<HTMLElement>("[role=option]");
+    if (row?.dataset.name) commit([row.dataset.name]);
+  });
   input.addEventListener("keydown", event => {
-    if (event.key === "Enter" && !event.isComposing) {
+    if (event.isComposing) return;
+    if (event.key === "Escape" && open) {
       event.preventDefault();
-      commitInput();
+      close();
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const option = panel.hidden ? undefined : (list.children[active] as HTMLElement | undefined)?.dataset.name;
+      if (option) commit([option]);
+      else commit(input.value.split(","));
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!open || panel.hidden) {
+        open = true;
+        active = 0;
+        renderSuggestions();
+        return;
+      }
+      const count = list.children.length;
+      list.children[active].setAttribute("aria-selected", "false");
+      active = (active + (event.key === "ArrowDown" ? 1 : count - 1)) % count;
+      const row = list.children[active];
+      row.setAttribute("aria-selected", "true");
+      input.setAttribute("aria-activedescendant", row.id);
+      row.scrollIntoView({ block: "nearest" });
     }
   });
-  addButton.addEventListener("click", () => { commitInput(); input.focus(); });
+  editor.querySelector(".tag-entry")?.addEventListener("click", event => {
+    if (!(event.target as HTMLElement).closest("button, input")) input.focus();
+  });
 
   return {
-    setTags(values: Tag[]) {
-      tags = [...values].sort((a, b) => (b.count ?? 0) - (a.count ?? 0) || a.name.localeCompare(b.name));
-      render();
+    setTags(values: string[]) {
+      tags = new Map(values.map(name => [normalize(name), name]));
+      active = 0;
+      renderSuggestions();
+    },
+    setRecent(values: string[]) {
+      const keys = values.map(normalize);
+      if (keys.join("\n") === recent.join("\n")) return;
+      recent = keys;
+      active = 0;
+      renderSuggestions();
     },
     reset() {
-      tags = [];
+      tags.clear();
+      recent = [];
       picked.clear();
       input.value = "";
-      more.open = false;
+      close();
       notify("");
-      render();
+      renderSelected();
     },
-    forSave() { return commitInput() ? [...picked.values()] : null; },
+    forSave() { return commit(input.value.split(",")) ? [...picked.values()] : null; },
+    close,
   };
 }

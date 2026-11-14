@@ -15,6 +15,7 @@ export type LinkPreview = { kind: "article" | "pdf" | "feed" | "unsupported"; ti
 export type QueueAction = { article: Save; feed?: never } | { feed: FeedChoice; article?: never };
 export type QueuedAction = QueueAction & { id: string; origin: string; account?: string; error?: string };
 export type DeliveryUpdate = { type: "delivery"; id: string; error?: string };
+export type ExtensionState = { settings: Settings; online: boolean; session?: Session; queue: QueuedAction[]; recentTags: string[] };
 
 export function webURL(value: string): URL {
   const url = new URL(value);
