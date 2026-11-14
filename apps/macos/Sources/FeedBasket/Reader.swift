@@ -114,6 +114,8 @@ struct ReaderPage: NSViewRepresentable {
         article > :first-child { margin-block-start: 0; }
         a { color: \(style.css(style.accentPair)); }
         ::highlight(feedbasket) { background-color: #ffe873; color: #202020; }
+        ::highlight(feedbasket-selection) { background-color: \(style.css(style.palette.selection)); color: #252924; }
+        article.text-selection::selection, article.text-selection *::selection { background-color: transparent; color: inherit; }
         #selection-highlight { position: fixed; z-index: 1; padding: 5px \(BasketTokens.spacing)px;
                                border: 1px solid \(style.css(BasketTokens.line));
                                border-radius: \(BasketTokens.radius)px; white-space: nowrap;
@@ -317,19 +319,52 @@ enum ArticleSelection {
         const articleBody = document.querySelector('article');
         const button = document.getElementById('selection-highlight');
         if (!articleBody || !button) return;
+        const footer = document.getElementById('linked-feeds');
         let enabled = false;
         let selectedRange;
-        function update() {
-            const selection = window.getSelection();
-            selectedRange = undefined;
-            if (enabled && selection?.rangeCount && !selection.isCollapsed && selection.toString().trim()) {
-                const range = selection.getRangeAt(0);
-                const footer = document.getElementById('linked-feeds');
-                if (articleBody.contains(range.startContainer) && articleBody.contains(range.endContainer)
-                    && !footer.contains(range.startContainer) && !footer.contains(range.endContainer)) {
-                    selectedRange = range.cloneRange();
+
+        function paintSelection(range) {
+            if (!CSS.highlights || typeof Highlight !== 'function') return;
+            const fragments = [];
+            if (range) {
+                // Text-node ranges wrap with the text and exclude selected element boxes.
+                const root = range.commonAncestorContainer;
+                const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+                    acceptNode: node => range.intersectsNode(node) && !footer.contains(node)
+                        ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
+                });
+                for (let node = root.nodeType === Node.TEXT_NODE ? root : walker.nextNode(); node; node = walker.nextNode()) {
+                    const start = node === range.startContainer ? range.startOffset : 0;
+                    const end = node === range.endContainer ? range.endOffset : node.length;
+                    if (start >= end) continue;
+                    const fragment = document.createRange();
+                    fragment.setStart(node, start);
+                    fragment.setEnd(node, end);
+                    fragments.push(fragment);
                 }
             }
+            if (fragments.length) {
+                const fill = new Highlight(...fragments);
+                fill.priority = 1;
+                CSS.highlights.set('feedbasket-selection', fill);
+            } else {
+                CSS.highlights.delete('feedbasket-selection');
+            }
+            articleBody.classList.toggle('text-selection', fragments.length > 0);
+        }
+
+        function update() {
+            const selection = window.getSelection();
+            let textRange;
+            if (selection?.rangeCount && !selection.isCollapsed && selection.toString().trim()) {
+                const range = selection.getRangeAt(0);
+                if (articleBody.contains(range.startContainer) && articleBody.contains(range.endContainer)
+                    && !footer.contains(range.startContainer) && !footer.contains(range.endContainer)) {
+                    textRange = range;
+                }
+            }
+            selectedRange = enabled ? textRange?.cloneRange() : undefined;
+            paintSelection(textRange);
             position();
         }
         function position() {
