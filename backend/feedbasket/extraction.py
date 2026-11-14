@@ -177,8 +177,9 @@ def safe_html(markup, url):
     )
 
 
-def clean_text(markup):
-    tree = parse_html(nh3.clean(markup, tags={"p", "div", "br"}, clean_content_tags={"script", "style"}))
+def clean_text(markup, *, block_tags=None):
+    tags = {"p", "div", "br"} if block_tags is None else block_tags
+    tree = parse_html(nh3.clean(markup, tags=tags, clean_content_tags={"script", "style"}))
     return " ".join(" ".join(tree.itertext()).split())
 
 

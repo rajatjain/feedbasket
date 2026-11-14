@@ -164,13 +164,21 @@ def clean_expired(engine, config, moment):
 def run_worker(engine, config, stop: Event, publish_saved=None):
     recover_jobs(engine)
     cleaned_at = 0
+    backfilling_word_counts = True
     while not stop.is_set():
         try:
             moment = now()
             if moment - cleaned_at >= 3600:
                 clean_expired(engine, config, moment)
                 cleaned_at = moment
-            if tick(engine, config, publish_saved=publish_saved):
+            if backfilling_word_counts:
+                with write(engine) as db:
+                    accounts = library.backfill_word_counts(db)
+                backfilling_word_counts = bool(accounts)
+                if publish_saved:
+                    for account in accounts:
+                        publish_saved(account)
+            if tick(engine, config, publish_saved=publish_saved) or backfilling_word_counts:
                 continue
         except Exception as error:
             log.error("Scheduler iteration failed (%s)", type(error).__name__)

@@ -176,8 +176,7 @@ struct BasketStatus: View {
 
 @MainActor
 private enum FeedBasketArtwork {
-    static let lightIcon = loadIcon("feedbasket-light")
-    static let darkIcon = loadIcon("feedbasket-dark")
+    static let wordmarkIcon = loadIcon("feedbasket-wordmark")
     static let lightDockIcon = loadIcon("FeedBasket", extension: "icns")
     static let darkDockIcon = loadIcon("feedbasket-dock-dark")
 
@@ -193,7 +192,7 @@ struct FeedBasketWordmark: View {
 
     var body: some View {
         HStack(spacing: compact ? BasketTokens.spacing / 2 : BasketTokens.spacing) {
-            if let icon = style.scheme == .dark ? FeedBasketArtwork.darkIcon : FeedBasketArtwork.lightIcon {
+            if let icon = FeedBasketArtwork.wordmarkIcon {
                 Image(nsImage: icon)
                     .resizable()
                     .frame(width: compact ? 22 : 25, height: compact ? 22 : 25)

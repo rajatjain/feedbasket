@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-enum Shelf: Hashable {
+enum Shelf: Hashable, Codable {
     case rss, feed(String), saved, pdfs, highlights, tag(String), starred, archive, trash
 
     var label: String {
@@ -52,6 +52,14 @@ struct LibraryWindow: View {
     @BasketState private var unsubscribingFeed: Feed? = nil
     @BasketState private var source: String = "All"
     @BasketState private var limit: Int = 100
+    @BasketState private var highlightFilters = RestartSnapshot.HighlightFilters()
+    @BasketState private var restartReader = RestartReaderState()
+    @BasketState private var listPosition = RestartListPosition()
+    @BasketState private var restartListTarget: String?
+    @BasketState private var restoringShelf: Shelf?
+    @BasketState private var restoringReadStatus: String?
+    @BasketState private var restoredLibrary = false
+    @BasketState private var focusedListTopID: String?
 
     @BasketState private var showingSignIn = false
     @BasketState private var username = ""
@@ -131,7 +139,6 @@ struct LibraryWindow: View {
                 reader(article, highlight: highlight)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(style.color(style.readingSurface).ignoresSafeArea())
-                    .onExitCommand { readerFocused = false }
                     .modifier(BasketToastOverlay(location: .reader))
             } else {
                 NavigationSplitView(columnVisibility: $columns) {
@@ -139,7 +146,8 @@ struct LibraryWindow: View {
                 } content: {
                     Group {
                         if current == .highlights {
-                            HighlightsShelf(selection: $highlightSelection)
+                            HighlightsShelf(selection: $highlightSelection, filters: $highlightFilters,
+                                            restartListTarget: $restartListTarget, listPosition: listPosition)
                         } else {
                             articleList(articles, selectedArticles: selectedArticles, mixed: mixed)
                         }
@@ -178,10 +186,10 @@ struct LibraryWindow: View {
         .toolbar {
             if readerFocused || columns == .doubleColumn || columns == .detailOnly {
                 if #available(macOS 26, *) {
-                    ToolbarItem(placement: .primaryAction) { LibraryAddButton(action: showAdd) }
+                    ToolbarItem(placement: .primaryAction) { hiddenSidebarActions }
                         .sharedBackgroundVisibility(.hidden)
                 } else {
-                    ToolbarItem(placement: .primaryAction) { LibraryAddButton(action: showAdd) }
+                    ToolbarItem(placement: .primaryAction) { hiddenSidebarActions }
                 }
             }
         }
@@ -196,8 +204,18 @@ struct LibraryWindow: View {
                 ArticleUndoShortcut(undo: store.undoArticleChange)
             }
         }
+        .modifier(LibraryRestartObserver(
+            articleID: article?.id, libraryID: store.library.libraryID, didChangeLibrary: resetAfterLibraryChange,
+            reader: restartReader, restore: restoreAfterRestart
+        ))
         .onChange(of: shelf) {
+            if let restoringShelf, shelf == restoringShelf {
+                self.restoringShelf = nil
+                return
+            }
+            restartListTarget = nil
             highlightSelection = nil
+            highlightFilters = .init()
             documentType = "All"
             source = "All"
             limit = 100
@@ -207,12 +225,17 @@ struct LibraryWindow: View {
         }
         .onChange(of: mixed) { if !mixed { documentType = "All" } }
         .onChange(of: readFilter) {
+            if restoringReadStatus == readFilter {
+                restoringReadStatus = nil
+                return
+            }
             if selection.count > 1 || article.map({ !matchesReadFilter($0) }) == true { selection = [] }
         }
         .onChange(of: displayed.map(\.id)) { _, ids in selection.formIntersection(ids) }
         .onChange(of: article == nil) { if article == nil { readerFocused = false } }
         .onChange(of: store.profile?.id) { shelf = .rss; selection = []; username = "" }
         .onChange(of: store.updateScope) {
+            clearRestartTargets()
             feedRename = nil
             addRequest = nil
             deletingPDF = nil
@@ -264,6 +287,13 @@ struct LibraryWindow: View {
         addRequest = AddRequest()
     }
 
+    private var hiddenSidebarActions: some View {
+        HStack(spacing: BasketTokens.spacing / 2) {
+            if update.isReady { AppUpdateChip(restart: restart) }
+            LibraryAddButton(action: showAdd)
+        }
+    }
+
     private func openSavedItem(_ article: Article) {
         showSaved = true
         readerFocused = false
@@ -284,18 +314,126 @@ struct LibraryWindow: View {
         scrollTarget = id
     }
 
+    private func restart() async throws {
+        let scope = store.updateScope
+        let capture = restartReader.capture
+        let selectedID = current == .highlights
+            ? highlightSelection.flatMap { store.library.highlights?[$0]?.article_id }
+            : selected
+        var snapshot = RestartSnapshot(
+            origin: store.origin, accountID: store.profile?.id, libraryID: store.library.libraryID,
+            shelf: current, selection: selection, highlightID: highlightSelection,
+            listTopID: readerFocused ? focusedListTopID : listPosition.topID,
+            readStatus: readFilter, documentType: documentType, source: source, highlights: highlightFilters, listLimit: limit,
+            columns: columns == .detailOnly ? .detail : columns == .doubleColumn ? .double : .all,
+            readerFocused: readerFocused, showSubscriptions: showSubscriptions, showSaved: showSaved
+        )
+        if let capture, capture.id == selectedID { snapshot.reader = await capture.position() }
+        guard scope == store.updateScope, snapshot.libraryID == store.library.libraryID else {
+            throw CancellationError()
+        }
+        try update.restart(with: snapshot)
+    }
+
+    private func restoreAfterRestart() async {
+        guard let snapshot = update.takeResume(), matchesRestartScope(snapshot) else { return }
+        if store.library.libraryID == nil, snapshot.libraryID != nil {
+            await store.refresh()
+        }
+        guard matchesRestartScope(snapshot), store.library.libraryID == snapshot.libraryID else { return }
+        switch snapshot.shelf {
+        case .feed(let id) where store.library.feeds[id] == nil: return
+        case .tag(let tag) where !tags.contains(tag): return
+        default: break
+        }
+
+        restoredLibrary = true
+        if shelf != snapshot.shelf { restoringShelf = snapshot.shelf }
+        shelf = snapshot.shelf
+        if readFilter != snapshot.readStatus {
+            restoringReadStatus = snapshot.readStatus
+            readFilter = snapshot.readStatus
+        }
+        showSubscriptions = snapshot.showSubscriptions
+        showSaved = snapshot.showSaved
+        columns = switch snapshot.columns {
+        case .all: .all
+        case .double: .doubleColumn
+        case .detail: .detailOnly
+        }
+        highlightFilters = snapshot.highlights
+        let documents = documentShelf
+        let mixed = Set(documents.map(\.isPDF)).count > 1
+        documentType = mixed ? snapshot.documentType : "All"
+        source = snapshot.source
+        let available = Set(documents.map(\.id))
+        selection = snapshot.selection.intersection(available)
+        let ids = filtered(documents, mixed: mixed).map(\.id)
+        selection.formIntersection(ids)
+        let highlight = snapshot.highlightID.flatMap { store.library.highlights?[$0] }.flatMap { highlight -> Highlight? in
+            guard let article = store.article(highlight.article_id), article.location != "trash" else { return nil }
+            return highlight
+        }
+        highlightSelection = current == .highlights ? highlight?.id : nil
+        let itemID = current == .highlights ? highlight?.article_id : selected
+        restartReader.pending = snapshot.reader?.id == itemID ? snapshot.reader : nil
+        if current == .highlights {
+            restartListTarget = snapshot.listTopID ?? highlightSelection
+        } else {
+            let targets = selection.union(snapshot.listTopID.map { [$0] } ?? [])
+            let lastIndex = ids.lastIndex { targets.contains($0) }.map { $0 + 1 } ?? 0
+            limit = max(100, snapshot.listLimit, lastIndex)
+            restartListTarget = snapshot.listTopID.flatMap { ids.contains($0) ? $0 : nil } ?? selected
+        }
+        readerFocused = snapshot.readerFocused && itemID != nil
+        focusedListTopID = readerFocused ? restartListTarget : nil
+    }
+
+    private func matchesRestartScope(_ snapshot: RestartSnapshot) -> Bool {
+        snapshot.origin == store.origin && snapshot.accountID == store.profile?.id
+    }
+
+    private func clearRestartTargets() {
+        restoringShelf = nil
+        restoringReadStatus = nil
+        restoredLibrary = false
+        focusedListTopID = nil
+        restartListTarget = nil
+        restartReader.pending = nil
+        restartReader.capture = nil
+    }
+
+    private func resetAfterLibraryChange() {
+        guard restoredLibrary else { return }
+        clearRestartTargets()
+        shelf = .rss
+        selection = []
+        highlightSelection = nil
+        readerFocused = false
+    }
+
     private func reader(_ article: Article, highlight: Highlight?) -> some View {
         Group {
             if article.isPDF {
                 PDFReader(article: article, highlight: highlight, tags: tags, isFocused: readerFocused,
-                          focus: { readerFocused.toggle() }, perform: { perform($0, on: article) },
-                          delete: { deletingPDF = article })
+                          focus: toggleReaderFocus, perform: { perform($0, on: article) },
+                          delete: { deletingPDF = article }, restartReader: restartReader)
             } else {
-                ArticleReader(article: article, highlight: highlight, isFocused: readerFocused, focus: { readerFocused.toggle() },
-                              perform: { perform($0, on: article) })
+                ArticleReader(article: article, highlight: highlight, isFocused: readerFocused, focus: toggleReaderFocus,
+                              perform: { perform($0, on: article) }, restartReader: restartReader)
+                    .onExitCommand { if readerFocused { toggleReaderFocus() } }
             }
         }
         .id("\(store.updateScope)-\(article.id)")
+    }
+
+    private func toggleReaderFocus() {
+        if readerFocused {
+            restartListTarget = focusedListTopID
+        } else {
+            focusedListTopID = listPosition.topID
+        }
+        readerFocused.toggle()
     }
 
     private var feedsWithUnreadArticles: Set<String> {
@@ -366,7 +504,7 @@ struct LibraryWindow: View {
                 FeedBasketWordmark(compact: update.isReady)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if update.isReady {
-                    AppUpdateChip(restart: update.restart)
+                    AppUpdateChip(restart: restart)
                 }
             }
             .padding(.horizontal, update.isReady ? BasketTokens.spacing : BasketTokens.spacing * 1.5)
@@ -528,6 +666,7 @@ struct LibraryWindow: View {
                     List(selection: $selection) {
                         ForEach(articles.prefix(limit)) { article in
                             ArticleRow(article: article, archive: hasSourceFilter)
+                                .trackRestartRow(article.id, in: listPosition)
                                 .tag(article.id)
                                 .basketSelection(selection.contains(article.id))
                         }
@@ -540,6 +679,7 @@ struct LibraryWindow: View {
                         }
                     }
                     .listStyle(.plain)
+                    .trackRestartViewport(in: listPosition)
                     .scrollContentBackground(.hidden)
                     .contextMenu(forSelectionType: String.self) { ids in
                         let targets = articles.prefix(limit).filter { ids.contains($0.id) }
@@ -563,6 +703,13 @@ struct LibraryWindow: View {
                         }
                     }
                     .onExitCommand { selection = [] }
+                    .task(id: restartListTarget) { [target = restartListTarget] in
+                        guard let target else { return }
+                        await Task.yield()
+                        guard !Task.isCancelled, restartListTarget == target else { return }
+                        proxy.scrollTo(target, anchor: .top)
+                        restartListTarget = nil
+                    }
                     .task(id: scrollTarget) { [target = scrollTarget] in
                         guard let target else { return }
                         await Task.yield()
@@ -655,5 +802,24 @@ struct LibraryWindow: View {
         }
         .accessibilityLabel("Account")
         .help("Account")
+    }
+}
+
+private struct LibraryRestartObserver: ViewModifier {
+    let articleID: String?
+    let libraryID: String?
+    let didChangeLibrary: () -> Void
+    let reader: RestartReaderState
+    let restore: () async -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: libraryID) { previous, _ in
+                if previous != nil { didChangeLibrary() }
+            }
+            .onChange(of: articleID) { _, id in
+                if reader.pending?.id != id { reader.pending = nil }
+            }
+            .task { await restore() }
     }
 }

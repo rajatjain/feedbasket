@@ -1,6 +1,25 @@
 import AppKit
 import SwiftUI
 
+extension View {
+    func trackRestartRow(_ id: String, in position: RestartListPosition) -> some View {
+        onGeometryChange(for: CGRect.self) { geometry in
+            geometry.frame(in: .global)
+        } action: { frame in
+            position.update(id, frame: frame)
+        }
+        .onDisappear { position.update(id, frame: nil) }
+    }
+
+    func trackRestartViewport(in position: RestartListPosition) -> some View {
+        onGeometryChange(for: CGRect.self) { geometry in
+            geometry.frame(in: .global)
+        } action: { frame in
+            position.viewport = frame
+        }
+    }
+}
+
 struct ArticleBatchBar: View {
     @Environment(\.basketStyle) private var style
     let articles: [Article]
@@ -47,6 +66,14 @@ struct ArticleRow: View {
     let article: Article
     let archive: Bool
 
+    private var readingTime: Text? {
+        guard !article.isPDF, let words = article.word_count, words > 0 else { return nil }
+        let wordsPerMinute = 150.0
+        guard Double(words) >= wordsPerMinute else { return Text("<1 min read") }
+        let minutes = Int((Double(words) / wordsPerMinute).rounded())
+        return Text("\(minutes) min read")
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: BasketTokens.spacing) {
             Circle().fill(article.read ? .clear : style.accent).frame(width: 6, height: 6).padding(.top, 6)
@@ -64,6 +91,10 @@ struct ArticleRow: View {
                     Text("·").accessibilityHidden(true)
                     Text(article.date, format: .dateTime.month(.abbreviated).day().year())
                         .lineLimit(1).fixedSize()
+                    if let readingTime {
+                        Text("·").accessibilityHidden(true)
+                        readingTime.lineLimit(1).fixedSize()
+                    }
                     if article.isStarred {
                         Image(systemName: "star.fill").foregroundStyle(style.accent).accessibilityLabel("Starred")
                     }

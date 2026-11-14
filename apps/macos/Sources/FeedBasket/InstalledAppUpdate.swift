@@ -9,6 +9,7 @@ final class InstalledAppUpdate {
         .appending(path: "Applications/FeedBasket.app", directoryHint: .isDirectory)
     private let runningBuildID = Bundle.main.object(forInfoDictionaryKey: buildIDKey) as? String
     private let bundleID = Bundle.main.bundleIdentifier
+    private var resume = RestartHandoff.take(arguments: ProcessInfo.processInfo.arguments)
     private(set) var isReady = false
 
     private var isInstalledCopy: Bool {
@@ -36,21 +37,33 @@ final class InstalledAppUpdate {
         }
     }
 
-    func restart() throws {
+    func takeResume() -> RestartSnapshot? {
+        defer { resume = nil }
+        return resume
+    }
+
+    func restart(with snapshot: RestartSnapshot) throws {
         check()
         guard isReady else { return }
+        let token = UUID()
+        try RestartHandoff.save(snapshot, token: token)
         let relaunch = Process()
         relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
         // Launch after AppKit finishes quitting so the two instances never write the library together.
         relaunch.arguments = ["-c", """
             for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
                 if ! kill -0 "$1" 2>/dev/null; then
-                    exec /usr/bin/open -n -a "$2"
+                    exec /usr/bin/open -n -a "$2" --args "$3" "$4"
                 fi
                 sleep 1
             done
-            """, "feedbasket-relaunch", String(ProcessInfo.processInfo.processIdentifier), installURL.path]
-        try relaunch.run()
+            """, "feedbasket-relaunch", String(ProcessInfo.processInfo.processIdentifier), installURL.path,
+            RestartHandoff.argument, token.uuidString]
+        do { try relaunch.run() }
+        catch {
+            RestartHandoff.discard(token)
+            throw error
+        }
         NSApplication.shared.terminate(nil)
     }
 }
@@ -59,7 +72,8 @@ struct AppUpdateChip: View {
     @Environment(\.basketStyle) private var style
     @BasketState private var showingActions = false
     @BasketState private var restartFailed = false
-    let restart: () throws -> Void
+    @BasketState private var restarting = false
+    let restart: () async throws -> Void
 
     var body: some View {
         Button {
@@ -82,14 +96,20 @@ struct AppUpdateChip: View {
                         .buttonStyle(BasketButton())
                         .keyboardShortcut(.cancelAction)
                     Button("Restart") {
-                        do { try restart() }
-                        catch {
-                            restartFailed = true
-                            Diagnostics.write("App restart failed (\(type(of: error)))", level: "WARNING")
+                        restarting = true
+                        restartFailed = false
+                        Task {
+                            defer { restarting = false }
+                            do { try await restart() }
+                            catch {
+                                restartFailed = true
+                                Diagnostics.write("App restart failed (\(type(of: error)))", level: "WARNING")
+                            }
                         }
                     }
                     .buttonStyle(BasketButton(primary: true))
                 }
+                .disabled(restarting)
             }
             .padding(BasketTokens.spacing * 1.5)
         }

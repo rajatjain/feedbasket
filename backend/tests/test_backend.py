@@ -351,6 +351,7 @@ def test_quota_and_body_cleanup(backend):
     assert result["article_count"] == 1 and result["bytes_freed"] == storage["used_bytes"]
     item = client.get(f"/api/v1/articles/{ids['article']}").json()
     assert item["tags"] == ["space", "weekend"] and item["body_html"] is None
+    assert item["word_count"] is None
     canonical, _, body, extractor = extraction.extract(article_document())
     with write(app.state.engine) as db:
         article = library.article_for_id(db, ids["account"], ids["article"])
@@ -359,6 +360,38 @@ def test_quota_and_body_cleanup(backend):
     assert client.get(f"/api/v1/articles/{ids['article']}").json()["content_status"] == "quota"
     pdf = client.post("/api/v1/articles", json={"url": "https://example.com/file.pdf"})
     assert pdf.status_code == 202 and pdf.json()["article"]["document_type"] == "pdf"
+
+
+def test_article_word_count_backfill_and_sync(backend):
+    app, client, token, ids = backend
+    client.headers.update(bearer(token))
+    engine = app.state.engine
+    with write(engine) as db:
+        first = db.get(Article, ids["article"])
+        library.store_body(db, first, "<p>Read <em>this</em> first.</p><p>Then stop.</p>", "rss")
+        second = library.locate(db, ids["account"], "https://example.com/another-story")
+        library.store_body(db, second, "<ul><li>One &amp;</li><li>two.</li></ul>", "rss")
+        excerpt = library.locate(db, ids["account"], "https://example.com/excerpt")
+        excerpt.excerpt = "Only a summary."
+        expected = {first.id: 5, second.id: 2}
+        excerpt_id = excerpt.id
+    for article_id, count in expected.items():
+        assert client.get(f"/api/v1/articles/{article_id}").json()["word_count"] == count
+
+    with write(engine) as db:
+        for article_id in expected:
+            db.get(Article, article_id).word_count = None
+    cursor = client.get("/api/v1/sync").json()["cursor"]
+    for _ in expected:
+        with write(engine) as db:
+            assert library.backfill_word_counts(db, limit=1) == {ids["account"]}
+    with write(engine) as db:
+        assert not library.backfill_word_counts(db, limit=1)
+        assert db.get(Article, excerpt_id).word_count is None
+
+    changes = client.get("/api/v1/sync", params={"after": cursor}).json()["items"]
+    assert {item["id"]: item["data"]["word_count"] for item in changes} == expected
+    assert client.get(f"/api/v1/articles/{excerpt_id}").json()["word_count"] is None
 
 
 def test_admin_backup_retention_and_restore(backend, tmp_path):

@@ -9,8 +9,13 @@ from .db import (
     Account, Article, ArticleRedirect, ArticleTag, ArticleURL, Feed, FeedEntry,
     changed, enqueue, now,
 )
-from .extraction import normalize_url, pdf_url
+from .extraction import clean_text, normalize_url, pdf_url
 
+WORD_COUNT_BLOCKS = {
+    "article", "section", "div", "p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6",
+    "ul", "ol", "li", "dl", "dt", "dd", "blockquote", "pre", "table", "tr", "th", "td",
+    "figure", "figcaption",
+}
 
 def library_visible():
     return (Article.pdf_key.is_(None)) | (Article.saved_at.is_not(None))
@@ -71,6 +76,7 @@ def merge_alias(db, article, url):
         winner.title = loser.title
     if winner.content_status in {"pending", "failed", "unavailable", "quota"} and loser.body:
         winner.body, winner.body_bytes = loser.body, loser.body_bytes
+        winner.word_count = loser.word_count
         winner.extractor, winner.content_status = loser.extractor, loser.content_status
 
     for model in (ArticleURL, FeedEntry, ArticleRedirect):
@@ -134,6 +140,7 @@ def mark_pdf_link(db, article, url):
     article.url = url
     article.content_status = "ready"
     article.body, article.body_bytes, article.extractor = None, 0, None
+    article.word_count = None
     return article
 
 
@@ -213,6 +220,21 @@ def stored_bytes(db, account_id):
     return db.scalar(select(func.coalesce(func.sum(Article.body_bytes), 0)).where(Article.account_id == account_id))
 
 
+def count_words(body):
+    text = clean_text(body, block_tags=WORD_COUNT_BLOCKS)
+    return sum(any(char.isalnum() for char in token) for token in text.split())
+
+
+def backfill_word_counts(db, *, limit=100):
+    articles = db.scalars(select(Article).where(
+        Article.document_type == "article", Article.body.is_not(None), Article.word_count.is_(None),
+    ).order_by(Article.id).limit(limit)).all()
+    for article in articles:
+        article.word_count = count_words(article.body)
+        changed(db, article.account_id, "article", article.id)
+    return {article.account_id for article in articles}
+
+
 def store_body(db, article, body, extractor):
     size = len(body.encode("utf-8"))
     quota = db.get(Account, article.account_id).quota
@@ -221,6 +243,7 @@ def store_body(db, article, body, extractor):
             article.content_status = "quota"
     else:
         article.body, article.body_bytes = body, size
+        article.word_count = count_words(body)
         article.extractor, article.content_status = extractor, "ready"
     changed(db, article.account_id, "article", article.id)
 
@@ -234,6 +257,7 @@ def clear_bodies(db, account_id, before=None):
         count += 1
         freed += article.body_bytes
         article.body, article.body_bytes = None, 0
+        article.word_count = None
         article.extractor, article.content_status = None, "cleared"
         changed(db, account_id, "article", article.id)
     return {"article_count": count, "bytes_freed": freed}
@@ -272,6 +296,7 @@ def serialize_article(article, tags, feeds, *, body=False):
         "read": article.read, "starred": article.starred, "location": article.location, "trash_origin": article.trash_origin,
         "tags": tags, "feed_ids": feeds, "excerpt": article.excerpt,
         "content_status": article.content_status, "extractor": article.extractor, "body_bytes": article.body_bytes,
+        "word_count": article.word_count,
     }
     data["document_type"] = article.document_type
     if article.document_type == "pdf":

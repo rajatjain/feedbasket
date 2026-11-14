@@ -53,6 +53,7 @@ struct ReadingPreferences {
 }
 
 struct ReaderPage: NSViewRepresentable {
+    let articleID: String
     let body: String
     let style: BasketStyle
     let preferences: ReadingPreferences
@@ -62,6 +63,7 @@ struct ReaderPage: NSViewRepresentable {
     let targetHighlight: Highlight?
     let canHighlight: Bool
     let saveHighlight: (String, Highlight.Anchor) -> Void
+    let restartReader: RestartReaderState
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -84,6 +86,14 @@ struct ReaderPage: NSViewRepresentable {
 
     func updateNSView(_ view: WKWebView, context: Context) {
         let card = PublisherCardStyle.compact
+        let coordinator = context.coordinator
+        coordinator.articleID = articleID
+        coordinator.restartReader = restartReader
+        restartReader.capture = (articleID, { [articleID, weak coordinator, weak view] in
+            guard let coordinator, coordinator.loaded, let view,
+                  let position = await ArticleRestartPosition.capture(in: view) else { return nil }
+            return .article(id: articleID, position: position)
+        })
         context.coordinator.feeds = linkedFeeds
         context.coordinator.subscribe = subscribe
         context.coordinator.highlights = highlights
@@ -152,6 +162,8 @@ struct ReaderPage: NSViewRepresentable {
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+        var articleID: String?
+        weak var restartReader: RestartReaderState?
         var html = ""
         var loaded = false
         var renderedIDs: [String]?
@@ -171,7 +183,13 @@ struct ReaderPage: NSViewRepresentable {
             loaded = true
             updateHighlightAvailability(in: webView)
             updateFooter(in: webView)
-            updateHighlights(in: webView)
+            if case .article(let id, let position) = restartReader?.pending, id == articleID {
+                restartReader?.pending = nil
+                updateHighlights(in: webView, jumpToTarget: false)
+                ArticleRestartPosition.restore(position, in: webView)
+            } else {
+                updateHighlights(in: webView)
+            }
         }
 
         func updateHighlightAvailability(in webView: WKWebView) {
@@ -188,10 +206,10 @@ struct ReaderPage: NSViewRepresentable {
             saveHighlight?(quote, .init(kind: "article", prefix: selection["prefix"] ?? "", suffix: selection["suffix"] ?? ""))
         }
 
-        func updateHighlights(in webView: WKWebView) {
+        func updateHighlights(in webView: WKWebView, jumpToTarget: Bool = true) {
             let ids = highlights.map(\.id)
             guard loaded, renderedHighlights != ids || renderedTarget != target?.id else { return }
-            let jump = renderedTarget != target?.id ? target?.id : nil
+            let jump = jumpToTarget && renderedTarget != target?.id ? target?.id : nil
             renderedHighlights = ids
             renderedTarget = target?.id
             let marks = highlights.map { mark in
@@ -278,7 +296,7 @@ struct ReaderPage: NSViewRepresentable {
     }
 }
 
-private enum ArticleSelection {
+enum ArticleSelection {
     static let textIndex = """
         const article = document.querySelector('article');
         const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT, {
@@ -364,6 +382,7 @@ struct ArticleReader: View {
     let isFocused: Bool
     let focus: () -> Void
     let perform: (ArticleAction) -> Void
+    let restartReader: RestartReaderState
     @AppStorage("readerFont") private var font = "Georgia"
     @AppStorage("readerSize") private var size = 17.0
     @AppStorage("readerAlign") private var storedAlignment = ReaderAlignment.left.rawValue
@@ -400,12 +419,12 @@ struct ArticleReader: View {
                 .padding(.top, 24).padding(.bottom, 20)
                 .readerColumn(width: preferences.columnWidth)
             if let html = store.html(for: article.id) {
-                ReaderPage(body: html, style: style, preferences: preferences,
+                ReaderPage(articleID: article.id, body: html, style: style, preferences: preferences,
                            linkedFeeds: linkedFeeds, subscribe: subscribeToLinkedFeed,
                            highlights: (store.library.highlights ?? [:]).values.filter { $0.article_id == article.id }.sorted { $0.id < $1.id },
                            targetHighlight: highlight,
                            canHighlight: store.canUseAPI && article.location != "trash" && !savingHighlight,
-                           saveHighlight: saveSelectedHighlight)
+                           saveHighlight: saveSelectedHighlight, restartReader: restartReader)
             } else {
                 VStack(alignment: .leading, spacing: BasketTokens.spacing) {
                     Text(availability).foregroundStyle(style.color(BasketTokens.muted))
@@ -686,14 +705,15 @@ private extension View {
     }
 }
 
-private struct ReaderToolbarButtonStyle: ButtonStyle {
+struct ReaderToolbarButtonStyle: ButtonStyle {
     @Environment(\.basketStyle) private var style
+    var active = false
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 15, weight: .medium))
             .frame(width: 30, height: 30)
-            .background(configuration.isPressed ? style.color(BasketTokens.subtle) : .clear,
+            .background(configuration.isPressed || active ? style.color(BasketTokens.subtle) : .clear,
                         in: RoundedRectangle(cornerRadius: BasketTokens.radius))
             .contentShape(Rectangle())
     }

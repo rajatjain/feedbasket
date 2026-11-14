@@ -13,18 +13,29 @@ struct PDFReader: View {
     let focus: () -> Void
     let perform: (ArticleAction) -> Void
     let delete: () -> Void
+    let restartReader: RestartReaderState
 
     @BasketState private var reader = PDFReaderController()
     @BasketState private var thumbnails = true
+    @BasketState private var focusThumbnails = false
     @BasketState private var editingTags = false
     @BasketState private var tagText = ""
     @BasketState private var query = ""
-    @BasketState private var pageEntry = "1"
+    @BasketState private var finding = false
+    @BasketState private var findFocusRequest = 0
     @BasketState private var error: String?
     @BasketState private var retry = 0
     @BasketState private var savingMark = false
     @BasketState private var password = ""
     @BasketState private var lockedPDF: LockedPDF?
+
+    private var restartPosition: RestartSnapshot.PDFPosition? {
+        guard case .pdf(let id, let position) = restartReader.pending, id == article.id else { return nil }
+        return position
+    }
+
+    private var showThumbnails: Bool { isFocused ? focusThumbnails : thumbnails }
+    private var canMark: Bool { article.location != "trash" && store.canUseAPI && !savingMark }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -36,10 +47,34 @@ struct PDFReader: View {
         .task(id: LoadKey(retry: retry, pending: article.pdf?.deletion_pending, online: article.pdf?.source != "link" && store.canUseAPI)) {
             await load()
         }
-        .onChange(of: reader.page) { pageEntry = String(reader.page) }
         .onChange(of: highlight?.id) { reader.jump(to: highlight) }
         .onChange(of: marks.map(\.id)) { reader.showMarks(marks) }
-        .onDisappear { reader.flushPosition() }
+        .onAppear {
+            let thumbnails = isFocused ? $focusThumbnails : $thumbnails
+            if let restartPosition { thumbnails.wrappedValue = restartPosition.thumbnails }
+            restartReader.capture = (article.id, { [weak controller = reader, thumbnails, id = article.id] in
+                guard let position = controller?.positionForRestart(thumbnails: thumbnails.wrappedValue) else { return nil }
+                return .pdf(id: id, position: position)
+            })
+        }
+        .onDisappear {
+            reader.flushPosition()
+            reader.clearSearch()
+        }
+        .task(id: finding ? query : nil) { [query] in
+            guard finding else { return }
+            do { try await Task.sleep(for: .milliseconds(180)) }
+            catch { return }
+            reader.search(query)
+        }
+        .onChange(of: query) { if !reader.hasSearch(for: query) { reader.clearSearch() } }
+        .onChange(of: article.pdf?.deletion_pending) {
+            if article.pdf?.deletion_pending == true { closeFind() }
+        }
+        .onExitCommand {
+            if finding { closeFind() }
+            else if isFocused { changeFocus() }
+        }
         .popover(isPresented: $editingTags) {
             VStack(alignment: .leading, spacing: BasketTokens.spacing) {
                 Text("Edit tags").font(.headline)
@@ -59,9 +94,8 @@ struct PDFReader: View {
             BasketEmpty(title: "Deleting PDF…", icon: "trash")
         } else if let document = reader.document {
             HStack(spacing: 0) {
-                if thumbnails { thumbnailRail(document); Divider() }
-                PDFCanvas(reader: reader, canMark: article.location != "trash" && store.canUseAPI, mark: save)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if showThumbnails { thumbnailRail(document); Divider() }
+                pdfPage(document)
             }
             if let error {
                 Text(error).foregroundStyle(.red).padding(.horizontal, 10).padding(.vertical, 5)
@@ -104,83 +138,196 @@ struct PDFReader: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(article.title).font(.headline).lineLimit(1).help(article.title)
-                Spacer()
-                if article.location != "trash", article.pdf?.deletion_pending != true {
-                    Button { tagText = article.tags.joined(separator: ", "); editingTags = true } label: {
-                        Label("Edit tags", systemImage: "tag").labelStyle(.iconOnly)
-                    }.help("Edit tags")
-                    Menu {
-                        Button(article.read ? "Mark as unread" : "Mark as read") {
-                            store.change(Mutation(articleID: article.id, read: !article.read))
-                        }
-                        Button(ArticleAction.star.title(for: article)) { perform(.star) }
-                        if ArticleAction.archive.allows(article) {
-                            Button("Archive") { perform(.archive) }
-                        } else {
-                            Button("Restore to Read Later") { store.change(Mutation(articleID: article.id, action: "restore")) }
-                        }
-                        Button("Move to Trash", role: .destructive) { perform(.dislike) }
-                        if article.pdf?.source == "link", let url = article.original {
-                            Button("Open original") { NSWorkspace.shared.open(url) }
-                        }
-                    } label: {
-                        Label("PDF actions", systemImage: "ellipsis.circle").labelStyle(.iconOnly)
-                    }.menuStyle(.borderlessButton).fixedSize()
-                }
-                if article.location == "trash" && article.pdf?.deletion_pending != true {
-                    Button("Restore") { store.change(Mutation(articleID: article.id, action: "restore")) }
-                    Button("Delete Permanently…", role: .destructive, action: delete).disabled(!store.canUseAPI)
-                }
-                toolbarButton(isFocused ? "Exit Focus Mode" : "Enter Focus Mode",
-                              icon: isFocused ? "arrow.down.right.and.arrow.up.left" : "viewfinder", action: focus)
-            }
-            if let document = reader.document, article.pdf?.deletion_pending != true {
-                HStack(spacing: 7) {
-                    toolbarButton("Thumbnails", icon: thumbnails ? "sidebar.left" : "rectangle") { thumbnails.toggle() }
-                    toolbarButton("Previous page", icon: "chevron.left") { reader.go(to: reader.page - 1) }
-                        .disabled(reader.page <= 1)
-                    TextField("Page", text: $pageEntry)
-                        .frame(width: 37)
-                        .onSubmit {
-                            if let page = Int(pageEntry) { reader.go(to: page) }
-                            pageEntry = String(reader.page)
-                        }
-                    Text("/ \(document.pageCount)").foregroundStyle(.secondary).monospacedDigit()
-                    toolbarButton("Next page", icon: "chevron.right") { reader.go(to: reader.page + 1) }
-                        .disabled(reader.page >= document.pageCount)
-                    Divider().frame(height: 15)
-                    toolbarButton("Zoom out", icon: "minus.magnifyingglass") { reader.view?.zoomOut(nil) }
-                    toolbarButton("Zoom in", icon: "plus.magnifyingglass") { reader.view?.zoomIn(nil) }
-                    toolbarButton("Fit page", icon: "arrow.up.left.and.arrow.down.right") { reader.view?.autoScales = true }
-                    Spacer(minLength: 2)
-                    TextField("Find in PDF", text: $query)
-                        .frame(minWidth: 70, maxWidth: 140)
-                        .onSubmit { reader.find(query) }
-                    toolbarButton("Find next", icon: "magnifyingglass") { reader.find(query) }
-                        .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-                if reader.canMark && article.location != "trash" {
-                    HStack(spacing: 7) {
-                        ForEach([Highlight.Mark.highlight, .underline], id: \.self) { mark in
-                            Button { save(mark) } label: { Label(mark.label, systemImage: mark.icon) }
-                                .buttonStyle(BasketButton())
-                                .disabled(!store.canUseAPI || savingMark)
-                        }
+        Group {
+            if let document = reader.document, article.pdf?.deletion_pending != true, !isFocused {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: BasketTokens.spacing) {
+                        heading(stacked: true, compact: false).frame(minWidth: 140, maxWidth: .infinity, alignment: .leading)
+                        navigation(document)
+                        documentActions.frame(minWidth: 140, maxWidth: .infinity, alignment: .trailing)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        identityRow
+                        navigation(document).frame(maxWidth: .infinity)
                     }
                 }
+            } else {
+                identityRow
             }
-            if !article.tags.isEmpty { TagLabel(tag: article.tags.joined(separator: " · ")) }
         }
         .padding(.horizontal, BasketTokens.spacing)
-        .padding(.vertical, 7)
-        .buttonStyle(.borderless)
+        .padding(.vertical, 5)
     }
 
-    private func toolbarButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Label(title, systemImage: icon).labelStyle(.iconOnly) }.help(title)
+    private var identityRow: some View {
+        HStack(spacing: BasketTokens.spacing) {
+            heading(stacked: false, compact: true)
+            Spacer(minLength: 6)
+            documentActions
+        }
+    }
+
+    private func heading(stacked: Bool, compact: Bool) -> some View {
+        let layout = stacked ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+            : AnyLayout(HStackLayout(spacing: BasketTokens.spacing))
+        return layout {
+            Text(article.title)
+                .font(.headline)
+                .lineLimit(1)
+                .help(article.title)
+                .accessibilityAddTraits(.isHeader)
+                .layoutPriority(1)
+            if !article.tags.isEmpty {
+                TagLabel(tag: article.tags.joined(separator: " · "))
+                    .lineLimit(1)
+                    .frame(maxWidth: compact ? 110 : 150, alignment: .leading)
+            }
+        }
+    }
+
+    private var documentActions: some View {
+        HStack(spacing: 3) {
+            if reader.document != nil && article.pdf?.deletion_pending != true {
+                PDFToolbarButton(title: "Find in PDF (⌘F)", icon: "magnifyingglass", active: finding, action: showFind)
+                    .keyboardShortcut("f")
+                Divider().frame(height: 15).padding(.horizontal, 2)
+            }
+            if article.location != "trash", article.pdf?.deletion_pending != true {
+                PDFToolbarButton(title: "Edit tags", icon: "tag") {
+                    tagText = article.tags.joined(separator: ", ")
+                    editingTags = true
+                }
+                Menu {
+                    Button(article.read ? "Mark as unread" : "Mark as read") {
+                        store.change(Mutation(articleID: article.id, read: !article.read))
+                    }
+                    Button(ArticleAction.star.title(for: article)) { perform(.star) }
+                    if ArticleAction.archive.allows(article) {
+                        Button("Archive") { perform(.archive) }
+                    } else {
+                        Button("Restore to Read Later") { store.change(Mutation(articleID: article.id, action: "restore")) }
+                    }
+                    Button("Move to Trash", role: .destructive) { perform(.dislike) }
+                    if article.pdf?.source == "link", let url = article.original {
+                        Button("Open original") { NSWorkspace.shared.open(url) }
+                    }
+                } label: {
+                    Label("PDF actions", systemImage: "ellipsis.circle").labelStyle(.iconOnly)
+                        .font(.system(size: 15, weight: .medium))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .frame(width: 30, height: 30)
+                .help("PDF actions")
+            }
+            if article.location == "trash" && article.pdf?.deletion_pending != true {
+                Button("Restore") { store.change(Mutation(articleID: article.id, action: "restore")) }
+                    .buttonStyle(BasketButton())
+                Button("Delete Permanently…", role: .destructive, action: delete)
+                    .buttonStyle(BasketButton()).disabled(!store.canUseAPI)
+            }
+            PDFToolbarButton(title: isFocused ? "Exit Focus Mode" : "Enter Focus Mode",
+                             icon: isFocused ? "arrow.down.right.and.arrow.up.left" : "viewfinder",
+                             active: isFocused, action: changeFocus)
+        }
+        .fixedSize()
+    }
+
+    private func navigation(_ document: PDFDocument) -> some View {
+        HStack(spacing: 7) {
+            if !isFocused { thumbnailButton }
+            PDFPageControl(page: reader.page, count: document.pageCount, go: reader.go)
+            Divider().frame(height: 16)
+            if isFocused {
+                PDFToolbarButton(title: "Zoom out", icon: "minus.magnifyingglass") { reader.zoom(inward: false) }
+            }
+            Menu {
+                Button("Fit width") { reader.fit(.width) }
+                Button("Fit page") { reader.fit(.page) }
+                Button("Actual size") { reader.actualSize() }
+                if !isFocused {
+                    Divider()
+                    Button("Zoom in") { reader.zoom(inward: true) }
+                    Button("Zoom out") { reader.zoom(inward: false) }
+                }
+            } label: {
+                Label(reader.zoomLabel, systemImage: "arrow.up.left.and.arrow.down.right")
+                    .labelStyle(.titleAndIcon)
+                    .font(.system(size: BasketTokens.labelSize, weight: .medium))
+            }
+            .menuStyle(.borderlessButton)
+            .padding(.horizontal, 6)
+            .frame(height: 28)
+            .overlay {
+                RoundedRectangle(cornerRadius: BasketTokens.radius).strokeBorder(style.color(BasketTokens.line))
+                    .allowsHitTesting(false)
+            }
+            .fixedSize()
+            .help("Zoom options")
+            if isFocused {
+                PDFToolbarButton(title: "Zoom in", icon: "plus.magnifyingglass") { reader.zoom(inward: true) }
+                Divider().frame(height: 16)
+                thumbnailButton
+            }
+        }
+        .fixedSize()
+    }
+
+    private var thumbnailButton: some View {
+        PDFToolbarButton(title: showThumbnails ? "Hide thumbnails" : "Show thumbnails",
+                         icon: "sidebar.left", active: showThumbnails) {
+            if isFocused { focusThumbnails.toggle() }
+            else { thumbnails.toggle() }
+        }
+    }
+
+    private func pdfPage(_ document: PDFDocument) -> some View {
+        PDFCanvas(reader: reader, canMark: canMark, mark: save)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay {
+                PDFPageOverlays(selection: canMark ? reader.selectionBounds : nil, matches: reader.matchBounds, mark: save)
+            }
+            .overlay(alignment: .bottom) {
+                if isFocused {
+                    navigation(document)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 6)
+                        .modifier(PDFToolbarPanel())
+                        .padding(.bottom, 12)
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                if finding {
+                    PDFFindPanel(query: $query, focusRequest: findFocusRequest, status: reader.searchStatus,
+                                 canNavigate: reader.matchCount > 0, submit: submitFind,
+                                 step: reader.stepMatch, close: closeFind)
+                        .padding(8)
+                        .zIndex(1)
+                }
+            }
+    }
+
+    private func changeFocus() {
+        if let position = reader.positionForRestart(thumbnails: thumbnails) {
+            restartReader.pending = .pdf(id: article.id, position: position)
+        }
+        focus()
+    }
+
+    private func showFind() {
+        finding = true
+        findFocusRequest += 1
+    }
+
+    private func submitFind() {
+        if reader.hasSearch(for: query) { reader.stepMatch(1) }
+        else { reader.search(query) }
+    }
+
+    private func closeFind() {
+        finding = false
+        query = ""
+        reader.clearSearch()
     }
 
     private func thumbnailRail(_ document: PDFDocument) -> some View {
@@ -256,21 +403,24 @@ struct PDFReader: View {
 
     private func open(_ document: PDFDocument, revision: String) {
         let scope = store.updateScope
+        let resume = restartPosition
+        if resume != nil { restartReader.pending = nil }
         reader.open(document, revision: revision, position: store.readingPosition(for: article),
-                    highlight: highlight, marks: marks) { position in
+                    highlight: highlight, marks: marks, resume: resume) { position in
             store.rememberPDFPosition(position, articleID: article.id, scope: scope)
         }
     }
 
     private func save(_ mark: Highlight.Mark) {
-        guard let selection = reader.selectedText(), !savingMark else { return }
+        guard canMark, let selection = reader.selectedText() else { return }
+        let selectedPassage = reader.view?.currentSelection
         savingMark = true
         error = nil
         Task {
             defer { savingMark = false }
             do {
                 try await store.saveHighlight(article: article, mark: mark, quote: selection.quote, anchor: selection.anchor)
-                reader.view?.clearSelection()
+                if reader.view?.currentSelection === selectedPassage { reader.view?.clearSelection() }
             } catch {
                 if !(error is CancellationError) { self.error = error.localizedDescription }
             }
@@ -279,6 +429,7 @@ struct PDFReader: View {
 }
 
 private struct PDFCanvas: NSViewRepresentable {
+    @Environment(\.basketStyle) private var style
     let reader: PDFReaderController
     let canMark: Bool
     let mark: (Highlight.Mark) -> Void
@@ -288,15 +439,26 @@ private struct PDFCanvas: NSViewRepresentable {
         view.displayMode = .singlePageContinuous
         view.displayBox = .cropBox
         view.autoScales = true
+        view.pageBreakMargins = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        view.geometryChanged = { [weak reader] in reader?.layoutChanged() }
         reader.attach(view)
         return view
     }
 
-    func updateNSView(_ view: AnnotatablePDFView, context: Context) { view.mark = canMark ? mark : nil }
+    func updateNSView(_ view: AnnotatablePDFView, context: Context) {
+        view.backgroundColor = NSColor(style.color(style.palette.sidebar))
+        view.mark = canMark ? mark : nil
+    }
 }
 
 private final class AnnotatablePDFView: PDFView {
     var mark: ((Highlight.Mark) -> Void)?
+    var geometryChanged: (() -> Void)?
+
+    override func layout() {
+        super.layout()
+        geometryChanged?()
+    }
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let selection = currentSelection
@@ -319,28 +481,46 @@ private final class AnnotatablePDFView: PDFView {
 }
 
 @MainActor @Observable
-private final class PDFReaderController: NSObject {
+final class PDFReaderController: NSObject {
+    enum Fit { case width, page }
+
     private(set) var document: PDFDocument?
     private(set) var page = 1
-    private(set) var canMark = false
+    private(set) var selectionBounds: CGRect?
+    private(set) var matchBounds: [CGRect] = []
+    private(set) var matchCount = 0
+    private(set) var zoomLabel = "Fit width"
+    private var matchIndex: Int?
+    private var isSearching = false
+    private var submittedQuery = ""
+
+    var searchStatus: String {
+        if isSearching { return "Searching…" }
+        if submittedQuery.isEmpty { return "" }
+        return matchIndex.map { "\($0 + 1) of \(matchCount)" } ?? "No matches"
+    }
+
     @ObservationIgnored private(set) weak var view: PDFView?
     @ObservationIgnored private var revision: String?
     @ObservationIgnored private var initialPosition: ReadingPosition?
     @ObservationIgnored private var initialHighlight: Highlight?
+    @ObservationIgnored private var restartPosition: RestartSnapshot.PDFPosition?
     @ObservationIgnored private var onPosition: ((ReadingPosition) -> Void)?
     @ObservationIgnored private var appliedMarks: [String: [(PDFPage, PDFAnnotation)]] = [:]
     @ObservationIgnored private var lastPosition: ReadingPosition?
     @ObservationIgnored private var positionTask: Task<Void, Never>?
     @ObservationIgnored private var observingPosition = false
-    @ObservationIgnored private var findText = ""
     @ObservationIgnored private var matches: [PDFSelection] = []
-    @ObservationIgnored private var matchIndex = -1
+    @ObservationIgnored private var geometryTask: Task<Void, Never>?
+    @ObservationIgnored private var fitMode: Fit? = .width
+    @ObservationIgnored private var fitViewport: CGSize?
 
     func open(_ document: PDFDocument, revision: String, position: ReadingPosition?, highlight: Highlight?,
-              marks: [Highlight], onPosition: @escaping (ReadingPosition) -> Void) {
+              marks: [Highlight], resume: RestartSnapshot.PDFPosition?, onPosition: @escaping (ReadingPosition) -> Void) {
         self.revision = revision
         initialPosition = position?.document_revision == nil || position?.document_revision == revision ? position : nil
         initialHighlight = highlight
+        restartPosition = resume?.revision == revision ? resume : nil
         self.onPosition = onPosition
         self.document = document
         showMarks(marks)
@@ -348,25 +528,54 @@ private final class PDFReaderController: NSObject {
 
     func attach(_ view: PDFView) {
         flushPosition()
-        NotificationCenter.default.removeObserver(self)
+        if let previous = self.view {
+            let center = NotificationCenter.default
+            center.removeObserver(self, name: nil, object: previous)
+            if let clip = previous.documentView?.enclosingScrollView?.contentView {
+                center.removeObserver(self, name: nil, object: clip)
+            }
+        }
         self.view = view
         view.document = document
+        fitViewport = nil
         observingPosition = false
         Task { @MainActor [weak self, weak view] in
             guard let self, let view, self.view === view else { return }
             view.layoutSubtreeIfNeeded()
-            if let highlight = initialHighlight { jump(to: highlight) }
-            else if let pos = lastPosition ?? initialPosition { navigate(page: pos.page, offset: pos.offset) }
+            let resume = restartPosition
+            restartPosition = nil
+            if let position = resume, position.page > 0, let target = document?.page(at: position.page - 1) {
+                if position.fitPage == true {
+                    fitMode = .page
+                    applyFit(to: view)
+                } else if let scale = position.scale, scale.isFinite, scale > 0 {
+                    fitMode = nil
+                    view.autoScales = false
+                    view.scaleFactor = scale
+                } else {
+                    applyFit(to: view)
+                }
+                view.layoutSubtreeIfNeeded()
+                view.go(to: PDFDestination(page: target, at: position.point))
+            } else {
+                applyFit(to: view)
+                view.layoutSubtreeIfNeeded()
+                if let pos = lastPosition { navigate(page: pos.page, offset: pos.offset) }
+                else if let highlight = initialHighlight { jump(to: highlight) }
+                else if let pos = initialPosition { navigate(page: pos.page, offset: pos.offset) }
+            }
             page = view.currentPage.flatMap { document?.index(for: $0) }.map { $0 + 1 } ?? 1
             let center = NotificationCenter.default
             center.addObserver(self, selector: #selector(pageChanged), name: .PDFViewPageChanged, object: view)
-            center.addObserver(self, selector: #selector(selectionChanged), name: .PDFViewSelectionChanged, object: view)
+            center.addObserver(self, selector: #selector(layoutChanged), name: .PDFViewSelectionChanged, object: view)
+            center.addObserver(self, selector: #selector(layoutChanged), name: .PDFViewScaleChanged, object: view)
             let clipView = view.documentView?.enclosingScrollView?.contentView
             if let clipView {
                 clipView.postsBoundsChangedNotifications = true
                 center.addObserver(self, selector: #selector(positionChanged), name: NSView.boundsDidChangeNotification, object: clipView)
             }
             observingPosition = true
+            layoutChanged()
         }
     }
 
@@ -375,11 +584,8 @@ private final class PDFReaderController: NSObject {
         positionChanged()
     }
 
-    @objc private func selectionChanged() {
-        canMark = view?.currentSelection?.string?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-    }
-
     @objc private func positionChanged() {
+        layoutChanged()
         guard observingPosition, let view, let destination = view.currentDestination,
               let pdfPage = destination.page, let index = document?.index(for: pdfPage) else { return }
         let bounds = pdfPage.bounds(for: .cropBox)
@@ -412,6 +618,17 @@ private final class PDFReaderController: NSObject {
         if let lastPosition { onPosition?(lastPosition) }
     }
 
+    func positionForRestart(thumbnails: Bool) -> RestartSnapshot.PDFPosition? {
+        positionChanged()
+        flushPosition()
+        guard observingPosition, let revision, let view, let destination = view.currentDestination,
+              let pdfPage = destination.page, let index = document?.index(for: pdfPage),
+              destination.point.x.isFinite, destination.point.y.isFinite else { return nil }
+        return .init(revision: revision, page: index + 1, point: destination.point,
+                     scale: fitMode == nil ? view.scaleFactor : nil, thumbnails: thumbnails,
+                     fitPage: fitMode == .page ? true : nil)
+    }
+
     func go(to number: Int) {
         guard let document, let view else { return }
         let index = min(max(number, 1), document.pageCount) - 1
@@ -435,19 +652,144 @@ private final class PDFReaderController: NSObject {
         view.go(to: PDFDestination(page: target, at: point))
     }
 
-    func find(_ text: String) {
-        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, let document, let view else { return }
-        if text != findText {
-            findText = text
-            matches = document.findString(text, withOptions: [.caseInsensitive])
-            matchIndex = -1
+    func hasSearch(for query: String) -> Bool {
+        submittedQuery == query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func search(_ query: String) {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text != submittedQuery, let document else { return }
+        clearSearch()
+        submittedQuery = text
+        isSearching = true
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(foundMatch), name: .PDFDocumentDidFindMatch, object: document)
+        center.addObserver(self, selector: #selector(finishedSearch), name: .PDFDocumentDidEndFind, object: document)
+        document.beginFindString(text, withOptions: [.caseInsensitive])
+    }
+
+    func clearSearch() {
+        if let document {
+            stopObservingSearch(document)
+            if isSearching { document.cancelFindString() }
         }
-        guard !matches.isEmpty else { NSSound.beep(); return }
-        matchIndex = (matchIndex + 1) % matches.count
-        let match = matches[matchIndex]
-        view.setCurrentSelection(match, animate: true)
-        view.go(to: match)
+        isSearching = false
+        submittedQuery = ""
+        matches = []
+        matchIndex = nil
+        matchCount = 0
+        matchBounds = []
+    }
+
+    private func stopObservingSearch(_ document: PDFDocument) {
+        let center = NotificationCenter.default
+        center.removeObserver(self, name: .PDFDocumentDidFindMatch, object: document)
+        center.removeObserver(self, name: .PDFDocumentDidEndFind, object: document)
+    }
+
+    @objc private func foundMatch(_ notification: Notification) {
+        guard isSearching, let match = notification.userInfo?["PDFDocumentFoundSelection"] as? PDFSelection else { return }
+        matches.append(match)
+    }
+
+    @objc private func finishedSearch() {
+        guard isSearching, let document else { return }
+        stopObservingSearch(document)
+        isSearching = false
+        matchCount = matches.count
+        guard !matches.isEmpty else { return }
+        let firstOnOrAfterPage = matches.firstIndex { match in
+            match.pages.first.map { document.index(for: $0) >= page - 1 } == true
+        }
+        showMatch(firstOnOrAfterPage ?? 0)
+    }
+
+    func stepMatch(_ direction: Int) {
+        guard let matchIndex, !matches.isEmpty else { return }
+        showMatch((matchIndex + direction + matches.count) % matches.count)
+    }
+
+    private func showMatch(_ index: Int) {
+        matchIndex = index
+        view?.go(to: matches[index])
+        layoutChanged()
+    }
+
+    func fit(_ mode: Fit) {
+        fitMode = mode
+        fitViewport = nil
+        layoutChanged()
+    }
+
+    func actualSize() {
+        guard let view else { return }
+        fitMode = nil
+        view.autoScales = false
+        view.scaleFactor = 1
+        layoutChanged()
+    }
+
+    func zoom(inward: Bool) {
+        guard let view, inward ? view.canZoomIn : view.canZoomOut else { return }
+        fitMode = nil
+        view.autoScales = false
+        if inward { view.zoomIn(nil) }
+        else { view.zoomOut(nil) }
+        layoutChanged()
+    }
+
+    private func applyFit(to view: PDFView) {
+        let size = view.bounds.size
+        guard let fitMode, fitViewport != size, size.width > 40, size.height > 40 else { return }
+        if fitMode == .width {
+            fitViewport = size
+            view.autoScales = true
+            return
+        }
+        guard let page = view.currentPage ?? document?.page(at: 0) else { return }
+        let bounds = page.bounds(for: view.displayBox)
+        let dimensions = page.rotation.isMultiple(of: 180) ? bounds.size : CGSize(width: bounds.height, height: bounds.width)
+        guard dimensions.width > 0, dimensions.height > 0 else { return }
+        fitViewport = size
+        view.autoScales = false
+        let fitWidth = (size.width - view.pageBreakMargins.left - view.pageBreakMargins.right) / dimensions.width
+        let fitHeight = (size.height - view.pageBreakMargins.top - view.pageBreakMargins.bottom) / dimensions.height
+        let scale = min(fitWidth, fitHeight)
+        view.scaleFactor = min(max(scale, view.minScaleFactor), view.maxScaleFactor)
+    }
+
+    @objc func layoutChanged() {
+        guard observingPosition, geometryTask == nil else { return }
+        geometryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { geometryTask = nil }
+            guard let view else { return }
+            applyFit(to: view)
+            let title = switch fitMode {
+            case .width: "Fit width"
+            case .page: "Fit page"
+            case nil: "\(Int((view.scaleFactor * 100).rounded()))%"
+            }
+            if zoomLabel != title { zoomLabel = title }
+            let selection = view.currentSelection
+            let anchor = selection?.string?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                ? visibleRects(for: selection, in: view).first : nil
+            if selectionBounds != anchor { selectionBounds = anchor }
+            let outlines = visibleRects(for: matchIndex.map { matches[$0] }, in: view)
+            if matchBounds != outlines { matchBounds = outlines }
+        }
+    }
+
+    private func visibleRects(for selection: PDFSelection?, in view: PDFView) -> [CGRect] {
+        (selection?.selectionsByLine() ?? []).flatMap { line in
+            line.pages.compactMap { page in
+                let bounds = view.convert(line.bounds(for: page), from: page).intersection(view.bounds)
+                guard !bounds.isEmpty else { return nil }
+                return CGRect(x: bounds.minX - view.bounds.minX,
+                              y: view.isFlipped ? bounds.minY - view.bounds.minY : view.bounds.maxY - bounds.maxY,
+                              width: bounds.width, height: bounds.height)
+            }
+        }
     }
 
     func selectedText() -> (quote: String, anchor: Highlight.Anchor)? {
@@ -480,7 +822,8 @@ private final class PDFReaderController: NSObject {
             appliedMarks[mark.id] = locations(for: mark).map { page, rect, points in
                 let annotation = PDFAnnotation(bounds: rect, forType: mark.style == .underline ? .underline : .highlight, withProperties: nil)
                 annotation.quadrilateralPoints = points.map { NSValue(point: CGPoint(x: $0.x - rect.minX, y: $0.y - rect.minY)) }
-                let hex = UInt32(mark.color.dropFirst(), radix: 16) ?? 0xffe873
+                let storedColor = UInt32(mark.color.dropFirst(), radix: 16) ?? 0xffe873
+                let hex: UInt32 = mark.style == .underline && storedColor == 0xffe873 ? 0xb18d22 : storedColor
                 annotation.color = NSColor(srgbRed: Double((hex >> 16) & 255) / 255, green: Double((hex >> 8) & 255) / 255,
                                            blue: Double(hex & 255) / 255, alpha: mark.style == .underline ? 1 : 0.5)
                 page.addAnnotation(annotation)

@@ -72,6 +72,7 @@ class Article(Base):
     excerpt: Mapped[str] = mapped_column(Text, default="")
     body: Mapped[str | None] = mapped_column(Text)
     body_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    word_count: Mapped[int | None] = mapped_column(Integer)
     extractor: Mapped[str | None] = mapped_column(String(32))
     content_status: Mapped[str] = mapped_column(String(24), default="pending")
     document_type: Mapped[str] = mapped_column(String(16), server_default="article")
