@@ -8,7 +8,7 @@ Most such apps are paid; or do not support both functionalities: i.e. RSS Reader
 
 FeedBasket is
 
-- Open Source and Free
+- Free and open source under the [MIT License](LICENSE).
 - Fully self-hosted.
 - You fully own the data.
 
