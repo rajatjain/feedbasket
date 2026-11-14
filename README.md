@@ -12,19 +12,27 @@ FeedBasket is
 - Fully self-hosted.
 - You fully own the data.
 
-## Screenshots
+## Workflow demos
 
-RSS reader on macOS with sample articles and feeds.
+These animated demos use fictional articles, feeds, and PDFs.
 
-![FeedBasket in light mode with subscriptions, an article list, and a clean reading pane](docs/screenshots/mac-rss.webp)
+### Save for Later
 
-PDF reader on macOS with page thumbnails and Highlight and Underline beside selected text.
+Tag and save an article from Chrome. Open it on Mac, change the reading font and text size, and archive it when you’re done.
 
-![FeedBasket PDF reader with a compact toolbar, page thumbnails, and Highlight and Underline controls](docs/screenshots/mac-pdf-reader.webp)
+![Save an article from Chrome, customize the reader, and archive the article on Mac](docs/demos/save-for-later.gif)
 
-PDF Focus Mode with a search match outlined on the page and navigation in the floating bottom bar.
+### RSS
 
-![FeedBasket PDF Focus Mode with a search popover, a match count, and floating page and zoom controls](docs/screenshots/mac-pdf-focus.webp)
+Subscribe to a feed from Chrome. On Mac, filter to unread, read a story, load older posts, and star a favorite.
+
+![Subscribe to an RSS feed in Chrome, read unread stories on Mac, and load older posts](docs/demos/rss.gif)
+
+### PDFs
+
+Save a PDF link from Chrome or upload a file from Mac. Highlight and underline passages, search in Focus Mode, and return to your saved page or highlight.
+
+![Save and upload PDFs, mark up passages, search in Focus Mode, and resume reading](docs/demos/pdf.gif)
 
 ## 1. Start the backend
 
