@@ -1,22 +1,29 @@
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from copy import deepcopy
+from http.server import BaseHTTPRequestHandler
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 from pathlib import Path
-from threading import Thread
 from urllib.parse import urlsplit
 from xml.etree import ElementTree
 
 import pytest
-from fastapi.testclient import TestClient
+from sqlalchemy import select
 
-from feedbasket import auth, extraction, feeds, scheduler
-from feedbasket.config import Config
-from feedbasket.db import Article, Feed, Job, now, write
-from feedbasket.main import create_app
+from feedbasket import extraction, feeds, publisher as publisher_jobs, scheduler
+from feedbasket.db import Article, Feed, FeedEntry, Job, now, write
 
 DATA = Path(__file__).with_name("data")
 ATOM = "{http://www.w3.org/2005/Atom}"
 ARTICLE = "/missions/artemis/i-am-artemis-katie-spicer/"
+
+
+PUBLISHER_NOW = datetime(2026, 11, 15, tzinfo=UTC)
+
+
+class PublisherClock(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return PUBLISHER_NOW.astimezone(tz or UTC)
 
 
 class Publisher:
@@ -44,10 +51,23 @@ class Publisher:
         )
         self.routes[ARTICLE] = (200, {"Content-Type": "text/html"}, source)
 
-    def publish_feed(self, path, filename, next_page=None, generator=None):
+    def publish_feed(self, path, filename, next_page=None, generator=None, *, age_days=None, duplicate_from=None):
         channel = ElementTree.parse(DATA / filename).getroot()
-        for link in channel.findall("./channel/item/link"):
+        items = channel.findall("./channel/item")
+        for item in items:
+            link = item.find("link")
             link.text = self.origin + urlsplit(link.text).path
+        if age_days is not None:
+            assert len(age_days) == len(items)
+            for item, age in zip(items, age_days):
+                date = item.find("pubDate")
+                if age is None:
+                    item.remove(date)
+                else:
+                    date.text = format_datetime(PUBLISHER_NOW - timedelta(days=age))
+        if duplicate_from:
+            previous = ElementTree.fromstring(self.routes[duplicate_from][2])
+            channel.find("channel").insert(0, deepcopy(previous.find("./channel/item")))
         if next_page:
             ElementTree.SubElement(channel.find("channel"), ATOM + "link", {"rel": "next", "href": next_page})
         if generator:
@@ -58,7 +78,8 @@ class Publisher:
 
 
 @pytest.fixture
-def publisher():
+def publisher(http_server, monkeypatch):
+    monkeypatch.setattr(feeds, "datetime", PublisherClock)
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             site.requests.append(self.path)
@@ -72,28 +93,17 @@ def publisher():
         def log_message(self, *_):
             pass
 
-    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+    with http_server(Handler) as server:
         site = Publisher(f"http://127.0.0.1:{server.server_port}")
-        worker = Thread(target=server.serve_forever)
-        worker.start()
-        try:
-            yield site
-        finally:
-            server.shutdown()
-            worker.join()
+        yield site
 
 
 @pytest.fixture
-def library_backend(tmp_path):
-    email = "owner@gmail.com"
-    config = Config(db_path=tmp_path / "workflow.sqlite", admin_email=email, backup_frequency="disabled")
-    app = create_app(config, start_worker=False)
-    with TestClient(app, base_url=config.public_url) as client:
-        with write(app.state.engine) as db:
-            account = auth.sign_in(db, config, {"sub": "fixture-owner", "email": email, "email_verified": True})
-            token = auth.issue_session(db, account.id)
-        client.headers["Authorization"] = f"Bearer {token}"
-        yield client, app.state.engine, config
+def library_backend(backend_config, start_backend, account_headers):
+    with start_backend(backend_config) as (app, client):
+        owner, = account_headers(app, "owner")
+        client.headers.update(owner)
+        yield client, app.state.engine, backend_config
 
 
 def run_job(backend, publisher, job_id, *, expected="done", advance=False):
@@ -150,7 +160,7 @@ def test_redirect_and_canonical_merge_preserves_article_state(library_backend, p
 def test_refresh_and_backfill_follow_feed_pagination(library_backend, publisher):
     client, engine, _ = library_backend
     publisher.publish_feed("/feed", "nasa.xml", next_page="/older")
-    publisher.publish_feed("/older", "nasa-2.xml")
+    publisher.publish_feed("/older", "nasa-2.xml", duplicate_from="/feed")
     head_url = publisher.origin + "/feed"
     subscription = client.post("/api/v1/feeds", json={"url": head_url})
     assert subscription.status_code == 202
@@ -188,38 +198,120 @@ def test_refresh_and_backfill_follow_feed_pagination(library_backend, publisher)
         assert len({item["id"] for item in items()}) == count
     _, archived_entries, _ = feeds.parse_feed(publisher.fetch(publisher.origin + "/older"))
     assert {item["url"] for item in items()} == {entry.url for entry in entries + archived_entries}
+    with write(engine) as db:
+        assert set(db.scalars(select(FeedEntry.key).where(FeedEntry.feed_id == feed_id))) == {
+            entry.key for entry in entries + archived_entries
+        }
 
     assert client.post(feed_path + "/older").json() == {
         "history_end": True, "message": "No more articles in this feed.",
     }
 
 
-def test_initial_import_leaves_older_posts_for_manual_backfill(library_backend, publisher, caplog):
-    client, _, _ = library_backend
-    caplog.set_level("INFO", logger="feedbasket.feeds")
+def test_custom_feed_title_syncs_and_survives_refresh(library_backend, publisher):
+    client, engine, _ = library_backend
     publisher.publish_feed("/feed", "nasa.xml")
-    status, headers, body = publisher.routes["/feed"]
-    tree = ElementTree.fromstring(body)
-    today = datetime.now(UTC)
-    for index, date in enumerate(tree.findall("./channel/item/pubDate")):
-        age = index + 1 if index < 3 else 400 + index
-        date.text = format_datetime(today - timedelta(days=age))
-    publisher.routes["/feed"] = status, headers, ElementTree.tostring(tree)
+    subscription = client.post("/api/v1/feeds", json={
+        "url": publisher.origin + "/feed", "title": "Original publisher name", "interval_minutes": 30,
+    }).json()
+    path = f"/api/v1/feeds/{subscription['id']}"
+    cursor = client.get("/api/v1/sync").json()["cursor"]
+    assert client.patch(path, json={"custom_title": "   "}).status_code == 422
+
+    renamed = client.patch(path, json={"custom_title": "  Space News  "}).json()
+    assert renamed["title"] == renamed["custom_title"] == "Space News"
+    assert renamed["interval_minutes"] == 30
+    assert renamed["next_check"] == subscription["next_check"]
+    updates = client.get("/api/v1/sync", params={"after": cursor}).json()
+    assert [item["data"]["title"] for item in updates["items"]] == ["Space News"]
+
+    job_id = client.post(path + "/refresh").json()["job_id"]
+    run_job(library_backend, publisher, job_id, advance=True)
+    assert client.get("/api/v1/feeds").json()[0]["title"] == "Space News"
+    assert client.patch(path, json={"interval_minutes": 60}).json()["title"] == "Space News"
+
+    restored = client.patch(path, json={"custom_title": None}).json()
+    with write(engine) as db:
+        publisher_name = db.get(Feed, subscription["id"]).title
+    assert publisher_name != "Original publisher name"
+    assert restored["title"] == publisher_name
+    assert restored["custom_title"] is None
+    assert restored["interval_minutes"] == 60
+    other = client.post("/api/v1/auth/signup", json={"username": "other"}).json()
+    assert client.patch(path, json={"custom_title": "Other"}, headers={
+        "Authorization": f"Bearer {other['token']}",
+    }).status_code == 404
+
+
+def test_older_job_resumes_after_deadline(library_backend, publisher, monkeypatch):
+    client, engine, config = library_backend
+    publisher.publish_feed("/feed", "nasa.xml", next_page="/older")
+    publisher.publish_feed("/older", "nasa-2.xml")
+    url = publisher.origin + "/feed"
+    feed_id = client.post("/api/v1/feeds", json={"url": url}).json()["id"]
+    feed_path = f"/api/v1/feeds/{feed_id}"
+    _, entries, _ = feeds.parse_feed(publisher.fetch(url))
+    with write(engine) as db:
+        feed = db.get(Feed, feed_id)
+        feed.initial_done = True
+        feed.next_check = now() + 3600
+        for entry in entries[:5]:
+            feeds.import_entry(db, feed, entry)
+
+    allow_older_page = False
+    visited = []
+
+    def fetch(_, url):
+        visited.append(url)
+        if url.endswith("/older") and not allow_older_page:
+            raise publisher_jobs.DeadlineExceeded()
+        return publisher.fetch(url)
+
+    monkeypatch.setattr(publisher_jobs.Budget, "fetch", fetch)
+    for expected_count in (10, 20):
+        job_id = client.post(feed_path + "/older").json()["job_id"]
+        with write(engine) as db:
+            db.get(Job, job_id).run_at = 0
+        assert scheduler.tick(engine, config)
+        assert client.get(f"/api/v1/jobs/{job_id}").json()["status"] == "done"
+        items = client.get("/api/v1/articles", params={"feed_id": feed_id}).json()["items"]
+        assert len(items) == expected_count
+        if not allow_older_page:
+            assert not client.get("/api/v1/feeds").json()[0]["history_end"]
+        allow_older_page = True
+
+    assert visited == [url, publisher.origin + "/older", publisher.origin + "/older"]
+    assert client.get("/api/v1/feeds").json()[0]["history_end"]
+
+
+@pytest.mark.parametrize(("ages", "initial_indexes"), [
+    pytest.param((1, 364, 365, 366, 400, None, 402, 403, 404, 405), (0, 1, 2), id="exact-age-cutoff"),
+    pytest.param((None, 1, None, 2, 3, 4, 5, 6, 7, 8), (1, 3, 4, 5, 6, 7, 8, 9), id="undated-history"),
+])
+def test_initial_import_leaves_older_posts_for_manual_backfill(library_backend, publisher, ages, initial_indexes):
+    client, engine, _ = library_backend
+    publisher.publish_feed("/feed", "nasa.xml", age_days=ages)
+    tree = ElementTree.fromstring(publisher.routes["/feed"][2])
+    entries = [(item.findtext("link"), item.findtext("guid")) for item in tree.findall("./channel/item")]
     feed_id = client.post("/api/v1/feeds", json={"url": publisher.origin + "/feed"}).json()["id"]
     feed_path = f"/api/v1/feeds/{feed_id}"
 
-    def article_count():
-        return len(client.get("/api/v1/articles", params={"feed_id": feed_id}).json()["items"])
+    def assert_items(indexes):
+        expected = [entries[index] for index in indexes]
+        items = client.get("/api/v1/articles", params={"feed_id": feed_id}).json()["items"]
+        assert {item["url"] for item in items} == {url for url, _ in expected}
+        with write(engine) as db:
+            assert set(db.scalars(select(FeedEntry.key).where(FeedEntry.feed_id == feed_id))) == {
+                guid for _, guid in expected
+            }
 
     for _ in range(2):
         job = client.post(feed_path + "/refresh").json()
         run_job(library_backend, publisher, job["job_id"], advance=True)
-        assert article_count() == 3
-    assert "mode=initial found=10 selected=3 imported=3 stop_reason=age_cutoff" in caplog.text
-    assert "mode=refresh found=10 selected=0 imported=0 stop_reason=head_checked" in caplog.text
+        assert_items(initial_indexes)
     job = client.post(feed_path + "/older").json()
     run_job(library_backend, publisher, job["job_id"], advance=True)
-    assert article_count() == 10
+    assert_items(range(len(entries)))
 
 
 def test_recheck_imports_unadvertised_wordpress_pages(library_backend, publisher):
@@ -360,6 +452,105 @@ def test_discovery_probes_unadvertised_feed_on_request(library_backend, publishe
     assert response.status_code == 200
     assert response.json() == [{"url": publisher.origin + "/feed.xml", "title": "NASA"}]
     assert publisher.requests == ["/blog/", "/rss.xml", "/feed.xml"]
+
+
+@pytest.mark.parametrize(("path", "kind", "status"), [
+    pytest.param("/feed.xml", "feed", 200, id="direct-rss"),
+    pytest.param(ARTICLE, "article", 200, id="article-with-feed"),
+    pytest.param("/download?utm_source=signed#page=4", "pdf", 200, id="extensionless-pdf"),
+    pytest.param("/report", "unsupported", 200, id="unsupported-docx"),
+    pytest.param("/audio", "unsupported", 200, id="unsupported-audio"),
+    pytest.param("/protected", None, 422, id="publisher-signin"),
+])
+def test_guided_add_preview_and_save(library_backend, publisher, monkeypatch, path, kind, status, pdf_bytes):
+    client, engine, _ = library_backend
+    monkeypatch.setattr(publisher_jobs.Budget, "preview", lambda _, url: extraction.fetch(
+        url, resolve_address=publisher.resolve, preview=True,
+    ))
+    if kind == "article":
+        publisher.publish_article()
+        code, headers, markup = publisher.routes[ARTICLE]
+        feed_link = b'<link rel="alternate" type="application/rss+xml" href="/feed.xml" title="River updates">'
+        head, separator, rest = markup.partition(b"</head>")
+        assert separator
+        publisher.routes[ARTICLE] = code, headers, head + feed_link + separator + rest
+    if kind in {"article", "feed"}:
+        publisher.publish_feed("/feed.xml", "nasa.xml")
+    elif kind == "pdf":
+        publisher.routes[path.split("#")[0]] = (200, {"Content-Type": "application/octet-stream"}, pdf_bytes())
+    elif path == "/protected":
+        publisher.routes[path] = (403, {}, b"")
+    else:
+        media = {"audio": "audio/mpeg", "report": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+        publisher.routes[path] = (200, {"Content-Type": media[path[1:]]}, b"Unsupported file fixture")
+    url = publisher.origin + path
+    response = client.get("/api/v1/links/preview", params={"url": url})
+    assert response.status_code == status
+    preview = response.json()
+    if kind:
+        assert preview["kind"] == kind and preview["url"] == url
+    else:
+        assert preview["detail"]["code"] == "preview_unavailable"
+    assert client.get("/api/v1/sync").json()["items"] == []
+    with write(engine) as db:
+        for model in (Article, Feed, Job):
+            assert db.scalar(select(model)) is None
+
+    if kind == "feed":
+        candidate, = preview["feeds"]
+        assert candidate["format"] == "RSS"
+        saved = client.post("/api/v1/feeds", json={"url": candidate["url"]})
+        assert saved.status_code == 202
+        with write(engine) as db:
+            assert db.get(Feed, saved.json()["id"]).url == candidate["url"]
+        article_id, feed_id = None, saved.json()["id"]
+    elif kind in {"article", "pdf"}:
+        body = {"url": preview["url"], "title": preview["title"], "tags": [" Research "], "document_type": kind}
+        if kind == "article":
+            candidate, = preview["feeds"]
+            assert candidate["title"] == "River updates"
+            body["subscribe_url"] = candidate["url"]
+        saved = client.post("/api/v1/articles", json=body)
+        assert saved.status_code == 202
+        item = saved.json()["article"]
+        article_id, feed_id = item["id"], saved.json()["feed"]["id"] if saved.json()["feed"] else None
+        assert item["document_type"] == kind and item["tags"] == ["research"]
+        with write(engine) as db:
+            stored = db.get(Article, item["id"])
+            assert stored.url == url and stored.body is None and stored.pdf_key is None
+            if kind == "article":
+                assert db.get(Feed, saved.json()["feed"]["id"]).url == candidate["url"]
+    else:
+        return
+
+    assert client.get("/api/v1/sync").json()["items"]
+    with write(engine) as db:
+        queued = {job.kind: job.id for job in db.scalars(select(Job).where(Job.status == "queued"))}
+        assert queued.keys() == {"feed": {"refresh"}, "article": {"extract", "refresh"}, "pdf": set()}[kind]
+    if article_id and "extract" in queued:
+        run_job(library_backend, publisher, queued["extract"], advance=True)
+        detail = client.get(f"/api/v1/articles/{article_id}").json()
+        assert detail["content_status"] == "ready" and "Blue Moon" in detail["body_html"]
+    if feed_id:
+        run_job(library_backend, publisher, queued["refresh"], advance=True)
+        assert len(client.get("/api/v1/articles", params={"feed_id": feed_id}).json()["items"]) == 10
+        with write(engine) as db:
+            assert db.get(Feed, feed_id).initial_done
+            assert len(list(db.scalars(select(FeedEntry.key).where(FeedEntry.feed_id == feed_id)))) == 10
+
+
+def test_article_extraction_discovers_extensionless_pdf(library_backend, publisher):
+    client, _, _ = library_backend
+    publisher.routes["/download"] = (200, {"Content-Type": "application/pdf"}, b"%PDF-1.7\n")
+    url = publisher.origin + "/download"
+    article = client.post("/api/v1/articles", json={"url": url, "tags": ["research"]}).json()["article"]
+    path = f"/api/v1/articles/{article['id']}"
+    queued = client.post(path + "/extract").json()["job_id"]
+    run_job(library_backend, publisher, queued)
+    detail = client.get(path).json()
+    assert detail["document_type"] == "pdf"
+    assert detail["url"] == url and detail["tags"] == ["research"] and detail["body_html"] is None
+    assert client.post(path + "/extract").status_code == 415
 
 
 def test_subscription_preview_is_read_only_and_keeps_legacy_discovery(library_backend, publisher, monkeypatch):

@@ -2,7 +2,7 @@ import os
 from contextlib import contextmanager
 from datetime import UTC, datetime
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, Index, Integer, String, Text, UniqueConstraint, create_engine, event, false, select
+from sqlalchemy import BigInteger, Boolean, ForeignKey, ForeignKeyConstraint, Index, Integer, JSON, String, Text, UniqueConstraint, create_engine, event, false, select
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
@@ -23,8 +23,8 @@ class Account(Base):
     username: Mapped[str | None] = mapped_column(String(64), index=True, unique=True)
     name: Mapped[str] = mapped_column(Text, default="")
     picture: Mapped[str] = mapped_column(Text, default="")
-    admin: Mapped[bool] = mapped_column(Boolean, default=False)
     quota: Mapped[int] = mapped_column(BigInteger)
+    pdf_quota: Mapped[int] = mapped_column(BigInteger, server_default="5000000000")
 
 
 class AllowedAccount(Base):
@@ -49,7 +49,11 @@ class LoginAttempt(Base):
 
 class Article(Base):
     __tablename__ = "articles"
-    __table_args__ = (Index("ix_articles_account_location_published", "account_id", "location", "published_at"),)
+    __table_args__ = (
+        Index("ix_articles_account_location_published", "account_id", "location", "published_at"),
+        Index("ix_articles_account_pdf_import", "account_id", "pdf_import_id", unique=True),
+        Index("ix_articles_account_id_document", "account_id", "id", unique=True),
+    )
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"))
     url: Mapped[str] = mapped_column(Text)
@@ -70,6 +74,17 @@ class Article(Base):
     body_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     extractor: Mapped[str | None] = mapped_column(String(32))
     content_status: Mapped[str] = mapped_column(String(24), default="pending")
+    document_type: Mapped[str] = mapped_column(String(16), server_default="article")
+    pdf_key: Mapped[str | None] = mapped_column(Text)
+    pdf_filename: Mapped[str | None] = mapped_column(Text)
+    pdf_bytes: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    pdf_pages: Mapped[int | None] = mapped_column(Integer)
+    pdf_import_id: Mapped[str | None] = mapped_column(String(36))
+    pdf_digest: Mapped[str | None] = mapped_column(String(64))
+    pdf_expires_at: Mapped[int | None] = mapped_column(BigInteger)
+    reading_position: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
+    position_updated_at: Mapped[int] = mapped_column(BigInteger, server_default="0")
+    submitted_url: Mapped[str | None] = mapped_column(Text)
 
 
 class ArticleURL(Base):
@@ -85,6 +100,21 @@ class ArticleTag(Base):
     tag: Mapped[str] = mapped_column(String(80), primary_key=True, index=True)
 
 
+class Highlight(Base):
+    __tablename__ = "highlights"
+    __table_args__ = (
+        ForeignKeyConstraint(("account_id", "article_id"), ("articles.account_id", "articles.id"), ondelete="CASCADE"),
+    )
+    account_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    article_id: Mapped[str] = mapped_column(String(36), index=True)
+    style: Mapped[str] = mapped_column(String(16))
+    quote: Mapped[str] = mapped_column(Text)
+    color: Mapped[str] = mapped_column(String(16))
+    anchor: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[int] = mapped_column(BigInteger, default=now)
+
+
 class Feed(Base):
     __tablename__ = "feeds"
     __table_args__ = (UniqueConstraint("account_id", "url", name="uq_feed_account_url"),)
@@ -92,6 +122,7 @@ class Feed(Base):
     account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
     url: Mapped[str] = mapped_column(Text)
     title: Mapped[str] = mapped_column(Text)
+    custom_title: Mapped[str | None] = mapped_column(Text)
     kind: Mapped[str] = mapped_column(String(16), default="feed", server_default="feed")
     page_digest: Mapped[str | None] = mapped_column(String(64))
     interval_minutes: Mapped[int | None] = mapped_column(Integer)
@@ -135,6 +166,7 @@ class Job(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     kind: Mapped[str] = mapped_column(String(20))
     target: Mapped[str] = mapped_column(String(36), default="")
+    account_id: Mapped[str | None] = mapped_column(String(36))
     status: Mapped[str] = mapped_column(String(16), default="queued")
     run_at: Mapped[int] = mapped_column(BigInteger, default=now)
     attempts: Mapped[int] = mapped_column(Integer, default=0)

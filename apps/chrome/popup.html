@@ -12,13 +12,13 @@
   <label>Backend API URL<input id="origin" type="url" required></label>
   <div class="row">
     <label>Theme<select id="theme"><option value="system">Follow system</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
-    <label>Accent<select id="accent"><option value="green">Green</option><option value="blue">Blue</option><option value="violet">Violet</option><option value="rose">Rose</option><option value="amber">Amber</option></select></label>
+    <label>Palette<select id="accent"></select></label>
   </div>
   <button class="primary">Save settings</button>
 </form>
 <form id="save" hidden>
-  <div class="page-info"><h1 id="article">Current article</h1><p id="source"></p></div>
-  <div class="tag-editor">
+  <div class="page-info"><h1 id="article">Current tab</h1><p id="source"></p></div>
+  <div class="tag-editor" id="tag-editor">
     <label for="tags">Tags <span class="muted">Optional</span></label>
     <div id="selected-tags" role="group" aria-label="Selected tags" hidden></div>
     <div class="tag-entry">
@@ -26,12 +26,13 @@
       <button id="add-tag" type="button" disabled>Add</button>
     </div>
     <div id="tag-suggestions" hidden>
-      <div class="tag-list-heading"><span id="tag-heading">Your tags</span><span id="tag-count-heading">Articles</span></div>
+      <div class="tag-list-heading"><span id="tag-heading">Your tags</span><span id="tag-count-heading">Items</span></div>
       <ul id="suggested-tags" class="tag-list" aria-labelledby="tag-heading"></ul>
     </div>
     <details id="more-tags" hidden><summary>More tags</summary><ul id="other-tags" class="tag-list" aria-label="More tags"></ul></details>
     <p id="tag-feedback" role="status" hidden></p>
   </div>
+  <label id="pdf-override" hidden><input id="save-as-pdf" type="checkbox"> Save as a PDF link</label>
   <div id="feed-row" class="feed" hidden><span class="feed-icon" aria-hidden="true"></span><div><strong id="feed-title"></strong><span class="muted">RSS feed</span></div></div>
   <label id="feed-picker-row" hidden>Feed<select id="feed-picker"></select></label>
   <div id="manual-feed" hidden>

@@ -16,14 +16,19 @@ class Config:
     google_secret: str = ""
     admin_username: str = "admin"
     admin_password: str = field(default="", repr=False)
-    admin_email: str = ""
     session_secret: str = ""
     feed_interval: int = 30
     quota: int = 1_000_000_000
+    r2_endpoint_url: str = ""
+    r2_bucket: str = ""
+    r2_access_key_id: str = field(default="", repr=False)
+    r2_secret_access_key: str = field(default="", repr=False)
+    pdf_prefix: str = "pdfs/"
+    backup_prefix: str = "backups/"
+    backup_destination: str = ""
     backup_folder: str = "~/Library/Application Support/FeedBasket/Backups"
     backup_folder_managed: bool = False
     backup_frequency: str = "daily"
-    backup_retention: int = 7
     log_dir: Path | None = None
 
     @property
@@ -33,6 +38,14 @@ class Config:
     @property
     def admin_configured(self):
         return bool(self.admin_username and self.admin_password)
+
+    @property
+    def r2_configured(self):
+        return bool(self.r2_endpoint_url and self.r2_bucket and self.r2_access_key_id and self.r2_secret_access_key)
+
+    @property
+    def backup_uses_r2(self):
+        return self.backup_destination == "r2" or (not self.backup_destination and self.r2_configured)
 
     @classmethod
     def load(cls):
@@ -63,14 +76,19 @@ class Config:
             google_secret=os.getenv("FEEDBASKET_GOOGLE_CLIENT_SECRET", ""),
             admin_username=os.getenv("ADMIN_USER", os.getenv("FEEDBASKET_ADMIN_USERNAME", cls.admin_username)),
             admin_password=os.getenv("ADMIN_PASSWORD", os.getenv("FEEDBASKET_ADMIN_PASSWORD", "")),
-            admin_email=os.getenv("FEEDBASKET_ADMIN_EMAIL", google.get("admin_email", "")).strip().lower(),
             session_secret=os.getenv("FEEDBASKET_SESSION_SECRET", ""),
             feed_interval=int(defaults.get("feed_interval_minutes", cls.feed_interval)),
             quota=int(defaults.get("quota_bytes", cls.quota)),
+            r2_endpoint_url=os.getenv("R2_ENDPOINT_URL", "").strip().rstrip("/"),
+            r2_bucket=os.getenv("R2_BUCKET", "").strip(),
+            r2_access_key_id=os.getenv("R2_ACCESS_KEY_ID", ""),
+            r2_secret_access_key=os.getenv("R2_SECRET_ACCESS_KEY", ""),
+            pdf_prefix=(os.getenv("PDF_PREFIX", "").strip() or cls.pdf_prefix).rstrip("/") + "/",
+            backup_prefix=(os.getenv("BACKUP_PREFIX", "").strip() or cls.backup_prefix).rstrip("/") + "/",
+            backup_destination=os.getenv("BACKUP_DESTINATION", "").strip().lower(),
             backup_folder=str(backup_path if backup_dir else backup_path.resolve()),
             backup_folder_managed=bool(backup_dir),
             backup_frequency=defaults.get("backup_frequency", cls.backup_frequency),
-            backup_retention=int(defaults.get("backup_retention", cls.backup_retention)),
             log_dir=(path.parent / Path(log_dir).expanduser()).resolve() if log_dir else None,
         )
         config.validate()
@@ -85,9 +103,32 @@ class Config:
             raise ValueError("server.public_url must be an HTTP(S) origin")
         if public.scheme == "http" and public.hostname not in {"127.0.0.1", "localhost", "::1"}:
             raise ValueError("Use HTTPS for a non-loopback server.public_url")
-        if self.google_id and (not self.google_secret or not self.admin_email or len(self.session_secret) < 32):
-            raise ValueError("Google sign-in requires a client secret, admin email, and session secret of at least 32 characters")
+        if self.google_id and (not self.google_secret or len(self.session_secret) < 32):
+            raise ValueError("Google sign-in requires a client secret and a session secret of at least 32 characters")
         if not 5 <= self.feed_interval <= 10_080 or not 0 <= self.quota <= 10**12:
             raise ValueError("Invalid feed interval or article quota")
-        if self.backup_frequency not in {"daily", "weekly", "disabled"} or not 1 <= self.backup_retention <= 365:
-            raise ValueError("Invalid backup frequency or retention")
+        values = (self.r2_endpoint_url, self.r2_bucket, self.r2_access_key_id, self.r2_secret_access_key)
+        if any(values):
+            if not self.r2_configured:
+                raise ValueError("Set all four R2 connection fields to use Cloudflare R2")
+            endpoint = urlsplit(self.r2_endpoint_url)
+            if (not endpoint.hostname or endpoint.username is not None or endpoint.query or endpoint.fragment
+                or endpoint.path.rstrip("/") not in {"", "/" + self.r2_bucket}
+                or (endpoint.scheme != "https" and not (
+                    endpoint.scheme == "http" and endpoint.hostname in {"127.0.0.1", "localhost", "::1"}
+                ))):
+                raise ValueError("R2_ENDPOINT_URL must be the HTTPS S3 endpoint")
+        if (not self.pdf_prefix.endswith("/") or len(self.pdf_prefix.encode()) > 512
+            or any(part in {"", ".", ".."} for part in self.pdf_prefix[:-1].split("/"))
+            or any(ord(char) < 32 or char == "\\" for char in self.pdf_prefix)):
+            raise ValueError("PDF_PREFIX must be a nonempty object prefix ending in /")
+        if (not self.backup_prefix.endswith("/") or len(self.backup_prefix.encode()) > 512
+            or any(part in {"", ".", ".."} for part in self.backup_prefix[:-1].split("/"))
+            or any(ord(char) < 32 or char == "\\" for char in self.backup_prefix)):
+            raise ValueError("BACKUP_PREFIX must be a relative folder or object prefix")
+        if self.backup_destination not in {"", "r2", "local"}:
+            raise ValueError("BACKUP_DESTINATION must be r2, local, or empty")
+        if self.backup_uses_r2 and not self.r2_configured:
+            raise ValueError("R2 backups require all four R2 connection fields")
+        if self.backup_frequency not in {"daily", "weekly", "disabled"}:
+            raise ValueError("Invalid backup frequency")

@@ -26,12 +26,11 @@ def wait_for(read_status, completed, *, timeout=30):
 
 
 def test_live_save_and_feed_refresh(tmp_path):
-    email = "owner@gmail.com"
-    config = Config(db_path=tmp_path / "live.sqlite", admin_email=email, backup_frequency="disabled")
+    config = Config(db_path=tmp_path / "live.sqlite", backup_frequency="disabled")
     app = create_app(config)
     with TestClient(app, base_url=config.public_url) as client:
         with write(app.state.engine) as db:
-            owner = auth.sign_in(db, config, {"sub": "fixture-owner", "email": email, "email_verified": True})
+            owner = auth.create_local_account(db, config, "owner")
             token = auth.issue_session(db, owner.id)
         client.headers["Authorization"] = f"Bearer {token}"
 

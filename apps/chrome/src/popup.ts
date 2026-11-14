@@ -1,5 +1,6 @@
-import { apiOrigin, defaultSettings, request, webURL } from "./api.js";
-import type { DeliveryUpdate, FeedChoice, QueuedAction, Session, Settings } from "./api.js";
+import { palettes } from "./palettes.js";
+import { apiOrigin, defaultSettings, isPDFURL, request, webURL } from "./api.js";
+import type { DeliveryUpdate, FeedChoice, LinkPreview, QueuedAction, Session, Settings } from "./api.js";
 import { tagPicker } from "./tags.js";
 
 type State = { settings: Settings; online: boolean; session?: Session; queue: QueuedAction[] };
@@ -62,6 +63,8 @@ function report(error: unknown) { note(error instanceof Error ? error.message : 
 let tab: chrome.tabs.Tab | undefined;
 let current: State = { settings: defaultSettings, online: false, queue: [] };
 let valid = false;
+let detected: LinkPreview["kind"] | undefined;
+let checkedOnline = false;
 let submitting = false;
 let confirmation: { id: string; deliveredText: string } | undefined;
 let closeTimer: number | undefined;
@@ -72,6 +75,8 @@ const picker = select("feed-picker");
 const tags = tagPicker();
 let tagSession: Session | undefined;
 let tagRequest = 0;
+
+function savingPDF() { return detected === "pdf" || input("save-as-pdf").checked; }
 
 function showActionFeedback(text: string, state: "queued" | "delivered" | "error") {
   window.clearTimeout(closeTimer);
@@ -93,12 +98,14 @@ function updateDelivery(delivery: DeliveryUpdate) {
   else showActionFeedback(confirmation.deliveredText, "delivered");
 }
 
+select("accent").replaceChildren(...palettes.map(({id, label}) => new Option(label, id)));
+
 function selectedFeed(): FeedChoice | undefined {
   const manual = input("feed-url").value.trim();
   if (!manual) return picker.value ? { url: picker.value, title: picker.selectedOptions[0]?.text ?? "" } : undefined;
   try {
     const url = webURL(manual);
-    if (!url.pathname.toLowerCase().endsWith(".pdf")) return { url: url.href, title: "" };
+    if (!isPDFURL(url)) return { url: url.href, title: "" };
   } catch { /* The user may still be entering a URL. */ }
 }
 
@@ -106,15 +113,25 @@ function renderActions() {
   const manual = Boolean(input("feed-url").value.trim());
   const hasDiscoveredFeed = Boolean(picker.value) && !manual;
   const hasFeed = Boolean(selectedFeed());
-  const disabled = submitting || !valid || !current.session;
-  button("save-button").disabled = disabled;
+  const pdf = savingPDF();
+  const feedOnly = detected === "feed";
+  const supported = valid && detected !== "unsupported";
+  const canSubscribe = supported && !pdf;
+  const disabled = submitting || !supported || !current.session;
+  button("save-button").disabled = disabled || (findingFeeds && !pdf);
+  button("save-button").hidden = !supported || feedOnly;
+  button("save-button").textContent = pdf ? "Save PDF link" : "Save article";
+  button("save-subscribe-button").hidden = feedOnly;
   button("subscribe-button").disabled = disabled || !hasFeed;
   button("save-subscribe-button").disabled = disabled || !hasFeed;
-  el("feed-row").hidden = !hasDiscoveredFeed;
+  el("tag-editor").hidden = !supported || feedOnly;
+  el("pdf-override").hidden = !supported || detected !== undefined || findingFeeds;
+  el("feed-actions").hidden = !canSubscribe;
+  el("feed-row").hidden = !canSubscribe || !hasDiscoveredFeed;
   el("feed-title").textContent = picker.selectedOptions[0]?.text ?? "";
-  el("feed-picker-row").hidden = !hasDiscoveredFeed || picker.options.length < 2;
-  el("manual-feed").hidden = !valid || hasDiscoveredFeed;
-  el("feed-hint").textContent = findingFeeds ? "Looking for a feed…" : hasFeed ? ""
+  el("feed-picker-row").hidden = !canSubscribe || !hasDiscoveredFeed || picker.options.length < 2;
+  el("manual-feed").hidden = !canSubscribe || hasDiscoveredFeed;
+  el("feed-hint").textContent = findingFeeds ? "Checking this page…" : hasFeed ? ""
     : manual ? "Enter a valid RSS or Atom feed URL."
       : "No feed found automatically. Paste an RSS or Atom feed URL to subscribe.";
 }
@@ -131,7 +148,7 @@ function loadTags() {
 }
 
 async function findFeeds() {
-  if (!valid || tab?.id === undefined || !tab.url) return;
+  if (!valid || tab?.id === undefined || !tab.url || detected === "pdf" || findingFeeds) return;
   const sequence = ++feedRequest;
   const { online, session } = current;
   findingFeeds = true;
@@ -140,18 +157,31 @@ async function findFeeds() {
   try {
     const result = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      func: () => Array.from(document.querySelectorAll<HTMLLinkElement>(
+      func: () => ({ type: document.contentType, feeds: Array.from(document.querySelectorAll<HTMLLinkElement>(
         'link[rel~="alternate"][type="application/rss+xml"], link[rel~="alternate"][type="application/atom+xml"], link[rel~="alternate"][type="application/rdf+xml"]'
-      )).slice(0, 20).map(link => ({ title: link.title || location.hostname, url: link.href })),
+      )).slice(0, 20).map(link => ({ title: link.title || location.hostname, url: link.href })) }),
     });
-    feeds = result[0]?.result ?? [];
+    if (sequence !== feedRequest) return;
+    const page = result[0]?.result;
+    if (page?.type === "application/pdf") detected = "pdf";
+    feeds = page?.feeds ?? [];
   } catch { /* Chrome restricts injection on some tabs. */ }
   if (sequence !== feedRequest) return;
-  if (!feeds.length && online && session) {
+  if (detected !== "pdf" && online && session && !checkedOnline) {
     try {
-      feeds = await request(session.origin, "/api/v1/feeds/discover?probe=true&url=" + encodeURIComponent(tab.url),
-        session.token, undefined, 15000);
-    } catch { /* Saving the article is still available. */ }
+      checkedOnline = true;
+      const preview = await request<LinkPreview>(session.origin, "/api/v1/links/preview?url=" + encodeURIComponent(tab.url),
+        session.token, undefined, 10000);
+      if (sequence !== feedRequest) return;
+      detected = preview.kind;
+      if (preview.kind === "unsupported") note("This tab doesn’t contain an article, feed or PDF.");
+      feeds = [...(preview.feeds ?? []), ...feeds];
+      if (preview.kind === "feed" && !feeds.length) feeds = [{ url: tab.url, title: preview.title ?? "" }];
+      if (preview.kind === "article" && !feeds.length) {
+        feeds = await request<FeedChoice[]>(session.origin,
+          "/api/v1/feeds/discover?probe=true&url=" + encodeURIComponent(tab.url), session.token, undefined, 8000);
+      }
+    } catch { /* A manual PDF choice is available when the preview is inconclusive. */ }
   }
   if (sequence !== feedRequest) return;
   findingFeeds = false;
@@ -161,7 +191,7 @@ async function findFeeds() {
   for (const feed of feeds) {
     try {
       const url = webURL(feed.url);
-      if (url.pathname.toLowerCase().endsWith(".pdf") || seen.has(url.href)) continue;
+      if (isPDFURL(url) || seen.has(url.href)) continue;
       seen.add(url.href);
       picker.add(new Option(feed.title || url.hostname, url.href));
     } catch { continue; }
@@ -178,6 +208,8 @@ function update(state: State) {
     ++tagRequest;
     ++feedRequest;
     findingFeeds = false;
+    checkedOnline = false;
+    if (detected !== "pdf") detected = undefined;
     picker.replaceChildren();
     input("feed-url").value = "";
     tagSession = state.session;
@@ -185,7 +217,7 @@ function update(state: State) {
   }
   render(state);
   if (changedSession || !wasOnline) loadTags();
-  if (changedSession && state.session) void findFeeds();
+  if ((changedSession || !wasOnline) && state.session) void findFeeds();
 }
 button("settings-toggle").onclick = () => {
   const form = el("settings");
@@ -227,13 +259,16 @@ button("sync").onclick = () => {
 };
 picker.onchange = renderActions;
 input("feed-url").oninput = renderActions;
+input("save-as-pdf").onchange = renderActions;
 el<HTMLFormElement>("save").onsubmit = event => {
   event.preventDefault();
-  if (submitting || !valid || !tab?.url || !current.session) return;
+  if (submitting || !valid || !tab?.url || !current.session || detected === "unsupported") return;
   const action = (event.submitter as HTMLButtonElement | null)?.value;
   const subscribeOnly = action === "subscribe";
   const both = action === "both";
   const feed = selectedFeed();
+  const pdf = savingPDF();
+  if ((pdf && (subscribeOnly || both)) || (detected === "feed" && !subscribeOnly) || (findingFeeds && !pdf && !subscribeOnly)) return;
   if ((subscribeOnly || both) && !feed) return;
 
   let message: object;
@@ -244,6 +279,7 @@ el<HTMLFormElement>("save").onsubmit = event => {
     if (!selectedTags) return;
     message = { type: "save", article: {
       url: tab.url, title: (tab.title ?? "").slice(0, 500), tags: selectedTags,
+      document_type: pdf ? "pdf" : "article",
       subscribe_url: both ? feed?.url : undefined,
     } };
   }
@@ -253,7 +289,7 @@ el<HTMLFormElement>("save").onsubmit = event => {
   renderActions();
   void send<{ id: string }>(message).then(({ id }) => {
     confirmation = { id, deliveredText: subscribeOnly ? "Subscribed to feed."
-      : both ? "Saved to Read Later and subscribed to feed." : "Saved to Read Later." };
+      : both ? "Saved to Read Later and subscribed to feed." : pdf ? "PDF link saved." : "Saved to Read Later." };
     const delivery = earlyDeliveries.get(id);
     earlyDeliveries.clear();
     if (delivery) updateDelivery(delivery);
@@ -291,12 +327,13 @@ void (async () => {
   update(await send<State>({ type: "state" }));
   [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tab?.url) {
-    const url = new URL(tab.url);
-    const pdf = url.pathname.toLowerCase().endsWith(".pdf");
-    valid = ["http:", "https:"].includes(url.protocol) && !pdf;
-    el("article").textContent = tab.title || url.hostname || "Current tab";
-    el("source").textContent = url.hostname;
-    if (pdf) note("PDF support coming soon.");
+    try {
+      const url = webURL(tab.url);
+      valid = true;
+      if (isPDFURL(url)) detected = "pdf";
+      el("article").textContent = tab.title || url.hostname;
+      el("source").textContent = url.hostname;
+    } catch { note("Open a web page to save it. Local PDFs can be uploaded from the Mac app."); }
   }
   renderActions();
   void send<State>({ type: "sync" }).then(update).then(findFeeds).catch(report);

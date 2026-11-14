@@ -1,14 +1,17 @@
+import { defaultPalette } from "./palettes.js";
+
 export const defaultSettings = {
   origin: "http://127.0.0.1:12000",
   theme: "system",
-  accent: "green",
+  accent: defaultPalette,
 };
 
 export type Settings = typeof defaultSettings;
 export type Profile = { username?: string; id: string; name: string; email: string; picture: string };
 export type Session = { origin: string; token: string; profile: Profile };
-export type Save = { url: string; title: string; tags: string[]; subscribe_url?: string };
+export type Save = { url: string; title: string; tags: string[]; subscribe_url?: string; document_type?: "article" | "pdf" };
 export type FeedChoice = { url: string; title: string };
+export type LinkPreview = { kind: "article" | "pdf" | "feed" | "unsupported"; title?: string; feeds?: FeedChoice[] };
 export type QueueAction = { article: Save; feed?: never } | { feed: FeedChoice; article?: never };
 export type QueuedAction = QueueAction & { id: string; origin: string; account?: string; error?: string };
 export type DeliveryUpdate = { type: "delivery"; id: string; error?: string };
@@ -18,6 +21,10 @@ export function webURL(value: string): URL {
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.href.length > 4000)
     throw new Error("Use a valid HTTP or HTTPS URL.");
   return url;
+}
+
+export function isPDFURL(url: URL): boolean {
+  return url.pathname.toLowerCase().endsWith(".pdf");
 }
 
 export function apiOrigin(input: string): string {

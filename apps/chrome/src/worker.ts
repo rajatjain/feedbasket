@@ -1,10 +1,15 @@
-import { apiOrigin, APIError, defaultSettings, request, webURL } from "./api.js";
+import { apiOrigin, APIError, defaultSettings, isPDFURL, request, webURL } from "./api.js";
 import type { DeliveryUpdate, FeedChoice, Profile, QueueAction, QueuedAction, Save, Session, Settings } from "./api.js";
+import { paletteID } from "./palettes.js";
 import { diagnostic } from "./diagnostics.js";
 
 const storage = chrome.storage.local;
 const queuePrefix = "save:";
 const alarm = "sync-feedbasket";
+
+function actionKind(item: QueueAction) {
+  return item.feed ? "subscription" : item.article.document_type ?? "article";
+}
 type State = { settings: Settings; session?: Session; online: boolean; queue: QueuedAction[] };
 type Message =
   | { type: "state" | "sync" | "signOut" }
@@ -19,6 +24,7 @@ async function state(): Promise<State> {
     settings?: Partial<Settings>; session?: Session; online?: boolean;
   };
   const settings = { ...defaultSettings, ...all.settings };
+  settings.accent = paletteID(settings.accent);
   return {
     settings, online: all.online === true,
     session: all.session?.origin === settings.origin ? all.session : undefined,
@@ -69,7 +75,7 @@ async function sync() {
   for (const item of queue.filter(item => item.origin === settings.origin &&
     item.account === session?.profile.id && !item.error).slice(0, 8)) {
     const key = queuePrefix + item.id;
-    const action = item.feed ? "subscription" : "article";
+    const action = actionKind(item);
     try {
       const result = item.feed
         ? await request<{ id: string }>(settings.origin, "/api/v1/feeds", session.token, item.feed)
@@ -103,7 +109,7 @@ async function sync() {
 async function enqueue(action: QueueAction, session: Session) {
   const item: QueuedAction = { ...action, id: crypto.randomUUID(), origin: session.origin, account: session.profile.id };
   await storage.set({ [queuePrefix + item.id]: item });
-  diagnostic(`Action queued queue_id=${item.id} kind=${item.feed ? "subscription" : "article"}`);
+  diagnostic(`Action queued queue_id=${item.id} kind=${actionKind(item)}`);
   void scheduleSync();
   return { id: item.id };
 }
@@ -116,11 +122,14 @@ async function handle(message: Message) {
     case "save": {
       if (!current.session) throw new Error("Connect an account before saving.");
       const url = webURL(message.article.url);
-      if (url.pathname.toLowerCase().endsWith(".pdf")) throw new Error("PDF support coming soon.");
+      const pdf = message.article.document_type === "pdf" || isPDFURL(url);
       if (message.article.tags.length > 30 || message.article.tags.some(tag => tag.length > 80))
         throw new Error("Use up to 30 tags of at most 80 characters.");
-      if (message.article.subscribe_url) webURL(message.article.subscribe_url);
-      return enqueue({ article: message.article }, current.session);
+      if (message.article.subscribe_url) {
+        if (pdf) throw new Error("Save the PDF link, then subscribe separately to the feed.");
+        webURL(message.article.subscribe_url);
+      }
+      return enqueue({ article: { ...message.article, document_type: pdf ? "pdf" : "article" } }, current.session);
     }
     case "subscribe": {
       if (!current.session) throw new Error("Connect an account before subscribing.");
@@ -128,7 +137,7 @@ async function handle(message: Message) {
       return enqueue({ feed: { url: url.href, title: message.feed.title.slice(0, 500) } }, current.session);
     }
     case "settings": {
-      const settings = { ...message.settings, origin: apiOrigin(message.settings.origin) };
+      const settings = { ...message.settings, origin: apiOrigin(message.settings.origin), accent: paletteID(message.settings.accent) };
       if (settings.origin !== current.settings.origin) await storage.remove(["session", "attempt"]);
       await storage.set({ settings });
       if (settings.origin !== current.settings.origin) {

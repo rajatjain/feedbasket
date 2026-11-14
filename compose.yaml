@@ -9,13 +9,19 @@ services:
     environment:
       ADMIN_USER: "${ADMIN_USER-${FEEDBASKET_ADMIN_USERNAME-admin}}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD-${FEEDBASKET_ADMIN_PASSWORD-}}"
-      FEEDBASKET_ADMIN_EMAIL: "${FEEDBASKET_ADMIN_EMAIL:-}"
       FEEDBASKET_GOOGLE_CLIENT_ID: "${FEEDBASKET_GOOGLE_CLIENT_ID:-}"
       FEEDBASKET_GOOGLE_CLIENT_SECRET: "${FEEDBASKET_GOOGLE_CLIENT_SECRET:-}"
       FEEDBASKET_SESSION_SECRET: "${FEEDBASKET_SESSION_SECRET:-}"
       DB_DIR: "${DB_DIR:-${HOME}/feedbasket/db}"
       LOGS_DIR: "${LOGS_DIR:-${HOME}/feedbasket/logs}"
       BACKUP_DIR: "${BACKUP_DIR:-${HOME}/feedbasket/backups}"
+      BACKUP_PREFIX: "${BACKUP_PREFIX:-backups/}"
+      BACKUP_DESTINATION: "${BACKUP_DESTINATION:-}"
+      R2_ENDPOINT_URL: "${R2_ENDPOINT_URL:-}"
+      R2_BUCKET: "${R2_BUCKET:-}"
+      R2_ACCESS_KEY_ID: "${R2_ACCESS_KEY_ID:-}"
+      R2_SECRET_ACCESS_KEY: "${R2_SECRET_ACCESS_KEY:-}"
+      PDF_PREFIX: "${PDF_PREFIX:-pdfs/}"
     volumes:
       - type: bind
         source: "${DB_DIR:-${HOME}/feedbasket/db}"

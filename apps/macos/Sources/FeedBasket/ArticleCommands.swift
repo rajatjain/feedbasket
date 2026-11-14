@@ -24,7 +24,7 @@ enum ArticleAction: CaseIterable {
         switch self {
         case .archive: "Archive"
         case .star: article?.isStarred == true ? "Unstar" : "Star"
-        case .dislike: "Dislike"
+        case .dislike: article?.isPDF == true ? "Move to Trash" : "Dislike"
         }
     }
 

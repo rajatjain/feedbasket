@@ -67,24 +67,24 @@ li { padding: 5px 0; border-top: 1px solid var(--line); }
 <div class="grid">
 <section>
   <div class="heading"><h2>Backups</h2><form action="/admin/backup/run" method="post"><input type="hidden" name="token" value="{{ csrf }}"><button class="primary">Back Up Now</button></form></div>
+  <p>Destination <code>{{ backup.destination }}</code></p>
+  <p>Runs daily at midnight (Asia/Kolkata). Sunday's snapshot also goes into <code>weekly/</code>. The two newest snapshots are kept in each folder.</p>
   <form action="/admin/backup/settings" method="post">
     <input type="hidden" name="token" value="{{ csrf }}">
-    {% if backup_folder_managed %}
-    <p>Destination folder <code>{{ backup.folder }}</code></p>
-    {% else %}
-    <label>Destination folder <input name="folder" value="{{ backup.folder }}" required></label>
+    {% if backup_folder_editable %}
+    <label>Local base folder <input name="folder" value="{{ backup.folder }}" required></label>
     {% endif %}
     <div class="row">
-      <label>Frequency <select name="frequency">
-        {% for option in ('daily', 'weekly', 'disabled') %}<option {% if option == backup.frequency %}selected{% endif %}>{{ option }}</option>{% endfor %}
+      <label>Automatic backups <select name="frequency">
+        <option value="daily" {% if backup.enabled %}selected{% endif %}>Enabled</option>
+        <option value="disabled" {% if not backup.enabled %}selected{% endif %}>Disabled</option>
       </select></label>
-      <label>Snapshots to keep <input name="retention" type="number" min="1" max="365" value="{{ backup.retention }}" required></label>
       <button>Save backup settings</button>
     </div>
   </form>
-  <p><small>Last successful backup · {{ backup.last_at|local_time }}</small></p>
+  <p><small>Last successful backup · {{ backup.last_at|backup_time }}</small></p>
   {% if backup.last_path %}<p><small>{{ backup.last_path }}</small></p>{% endif %}
-  <p><small>Next scheduled backup · {{ backup.next_at|local_time }}</small></p>
+  <p><small>Next scheduled backup · {{ backup.next_at|backup_time }}</small></p>
 </section>
 <section>
   <h2>Database</h2>
@@ -112,7 +112,7 @@ li { padding: 5px 0; border-top: 1px solid var(--line); }
   </form>
   <ul>{% for account in accounts %}<li>{{ account.username or account.name or account.email }}<br><small>{{ account.id }}</small></li>{% endfor %}</ul>
   {% if configured %}
-  <h2>Google accounts</h2>
+  <h2>Google reader access</h2>
   <form action="/admin/access" method="post">
     <input type="hidden" name="token" value="{{ csrf }}">
     <label>Google account email <input name="email" type="email" placeholder="reader@example.com" required></label>

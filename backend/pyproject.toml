@@ -22,6 +22,8 @@ dependencies = [
     "sqlalchemy>=2,<3",
     "trafilatura>=2,<3",
     "uvicorn>=0.34,<1",
+    "boto3>=1.40,<2",
+    "pypdf>=6,<7",
 ]
 
 [dependency-groups]

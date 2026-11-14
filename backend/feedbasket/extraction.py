@@ -7,7 +7,7 @@ import socket
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote, unquote_plus, urljoin, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, unquote_plus, urljoin, urlsplit, urlunsplit
 
 import nh3
 import trafilatura
@@ -35,10 +35,10 @@ class PublisherHTTPError(FetchError):
 
 class PDFUnsupported(FetchError):
     def __init__(self):
-        super().__init__("PDF support coming soon.")
+        super().__init__("The publisher returned a PDF.")
 
 
-def normalize_url(value):
+def normalize_url(value, *, keep_query=False):
     value = value.strip()
     if len(value) > 4000 or re.search(r"[\x00-\x20\x7f\\]", value):
         raise ValueError("Invalid URL")
@@ -62,7 +62,7 @@ def normalize_url(value):
         key = unquote_plus(field.partition("=")[0]).lower()
         return not key.startswith("utm_") and key not in TRACKERS
 
-    query = "&".join(field for field in parts.query.split("&") if keep(field))
+    query = parts.query if keep_query else "&".join(field for field in parts.query.split("&") if keep(field))
     return urlunsplit((
         parts.scheme, netloc, quote(parts.path or "/", safe="/%:@!$&'()*+,;="),
         quote(query, safe="%/:@!$&'()*+,;=?[]"), "",
@@ -92,8 +92,12 @@ class Document:
     link_header: str = ""
 
 
-def fetch(url, *, resolve_address=public_address):
-    current = normalize_url(url)
+def pdf_url(url):
+    return unquote(urlsplit(url).path).lower().endswith(".pdf")
+
+
+def fetch(url, *, resolve_address=public_address, preview=False):
+    current = normalize_url(url, keep_query=preview)
     try:
         for _ in range(6):
             parts = urlsplit(current)
@@ -109,7 +113,7 @@ def fetch(url, *, resolve_address=public_address):
                 resource = urlunsplit(("", "", parts.path, parts.query, ""))
                 connection.request("GET", resource, headers={
                     "User-Agent": "FeedBasket/0.1",
-                    "Accept": "text/html, application/rss+xml, application/atom+xml, application/xml, text/xml, */*;q=0.1",
+                    "Accept": "text/html, application/rss+xml, application/atom+xml, application/xml, text/xml, application/pdf, */*;q=0.1",
                     "Accept-Encoding": "identity",
                 })
                 result = connection.getresponse()
@@ -117,19 +121,32 @@ def fetch(url, *, resolve_address=public_address):
                     destination = result.getheader("Location")
                     if not destination:
                         raise FetchError("Publisher redirect has no destination")
-                    current = normalize_url(urljoin(current, destination))
+                    current = normalize_url(urljoin(current, destination), keep_query=preview)
                     continue
                 if result.status != 200:
                     raise PublisherHTTPError(result.status)
                 media_type = result.headers.get_content_type()
+                link = result.getheader("Link", "")
                 if media_type == "application/pdf":
+                    if preview:
+                        return Document(current, b"", media_type, link)
                     raise PDFUnsupported()
-                data = result.read(MAX_RESPONSE + 1)
+                prefix = result.read(1024)
+                if prefix.startswith(b"%PDF-") or (
+                    media_type == "application/octet-stream" and b"%PDF-" in prefix
+                ):
+                    if preview:
+                        return Document(current, b"", "application/pdf", link)
+                    raise PDFUnsupported()
+                if preview and media_type not in {
+                    "text/html", "application/xhtml+xml", "application/xml", "text/xml", "text/plain",
+                    "application/rss+xml", "application/atom+xml", "application/rdf+xml",
+                } and not (media_type == "application/octet-stream" and prefix.lstrip().startswith(b"<")):
+                    return Document(current, b"", media_type, link)
+                data = prefix + result.read(MAX_RESPONSE + 1 - len(prefix))
                 if len(data) > MAX_RESPONSE:
                     raise FetchError("Publisher response exceeds 5 MB")
-                if data.startswith(b"%PDF-"):
-                    raise PDFUnsupported()
-                return Document(current, data, media_type, result.getheader("Link", ""))
+                return Document(current, data, media_type, link)
             finally:
                 connection.close()
     except (OSError, http.client.HTTPException, ValueError) as error:
@@ -225,3 +242,11 @@ def extract(document):
             if usable(body):
                 return canonical, title, body, name
     return canonical, title, None, None
+
+
+def load_article(url, rss_body, *, fetch_document=fetch):
+    document = fetch_document(url)
+    if rss_body:
+        canonical = canonical_url(parse_html(document.data), document.url)
+        return document.url, canonical, "", None, None
+    return document.url, *extract(document)

@@ -6,6 +6,9 @@ struct Library: Codable {
     var feeds: [String: Feed] = [:]
     var pending: [Mutation] = []
     var cursor = 0
+    var libraryID: String?
+    var highlights: [String: Highlight]?
+    var pendingPositions: [String: ReadingPosition]?
 }
 
 struct OfflineCopy: Codable {
@@ -48,6 +51,10 @@ struct Disk {
     func remove(_ id: String) throws {
         let url = copyURL(id)
         if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+    }
+
+    func clearCopies() throws {
+        if FileManager.default.fileExists(atPath: bodies.path) { try FileManager.default.removeItem(at: bodies) }
     }
 
     func copies() throws -> [(id: String, bytes: Int)] {

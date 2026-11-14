@@ -65,7 +65,7 @@ export function tagPicker() {
     const count = document.createElement("span");
     count.className = "tag-count";
     count.textContent = tag.count?.toLocaleString() ?? "";
-    if (tag.count !== null) count.setAttribute("aria-label", `${tag.count} ${tag.count === 1 ? "article" : "articles"}`);
+    if (tag.count !== null) count.setAttribute("aria-label", `${tag.count} ${tag.count === 1 ? "item" : "items"}`);
     const mark = document.createElement("span");
     mark.className = "tag-mark";
     mark.textContent = checked ? "✓" : "+";

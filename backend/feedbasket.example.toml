@@ -12,7 +12,6 @@ path = "~/Library/Application Support/FeedBasket/feedbasket.sqlite"
 # directory = "~/Library/Logs/FeedBasket Backend"
 
 [google]
-admin_email = ""
 client_id = ""
 
 [defaults]
@@ -20,4 +19,3 @@ feed_interval_minutes = 30
 quota_bytes = 1000000000
 backup_folder = "~/Library/Application Support/FeedBasket/Backups"
 backup_frequency = "daily"
-backup_retention = 7

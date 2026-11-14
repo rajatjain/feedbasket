@@ -13,9 +13,10 @@ from lxml import html
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from .db import Article, Feed, FeedEntry, Job, changed, enqueue, get_setting, now, write
-from .extraction import FetchError, PublisherHTTPError, clean_text, fetch, normalize_url, parse_html, safe_html, usable
-from .library import locate, store_body
+from . import highlights, publisher
+from .db import Article, Feed, FeedEntry, Job, Setting, changed, enqueue, get_setting, now, set_setting, write
+from .extraction import FetchError, PublisherHTTPError, clean_text, fetch, normalize_url, parse_html, pdf_url, safe_html, usable
+from .library import locate, mark_pdf_link, store_body
 
 FEED_TYPES = {"application/rss+xml": "RSS", "application/atom+xml": "Atom", "application/rdf+xml": "RSS"}
 log = logging.getLogger(__name__)
@@ -42,7 +43,9 @@ def link_url(base, value):
 
 
 def read_feed(document):
-    return feedparser.parse(document.data, response_headers={"content-location": document.url})
+    feed = feedparser.parse(document.data, response_headers={"content-location": document.url})
+    feed.setdefault("version", "")
+    return feed
 
 
 def parse_feed(document):
@@ -57,7 +60,7 @@ def feed_contents(document, feed):
     seen = set()
     for item in feed.entries:
         url = link_url(document.url, item.get("link"))
-        if not url or urlsplit(url).path.lower().endswith(".pdf"):
+        if not url:
             continue
         key = str(item.get("id") or url)
         if key in seen:
@@ -133,8 +136,11 @@ def website_metadata(tree, url):
 
 
 def preview(url, *, fetch_document=fetch):
-    document = fetch_document(url)
-    feed = read_feed(document)
+    return preview_document(fetch_document(url))
+
+
+def preview_document(document, *, feed=None):
+    feed = read_feed(document) if feed is None else feed
     if feed.version:
         title = clean_text(feed.feed.get("title", ""))[:500] or urlsplit(document.url).netloc
         site_url = link_url(document.url, feed.feed.get("link")) or document.url
@@ -221,10 +227,11 @@ def subscribe(db, account_id, url, title, interval=None, *, kind="feed"):
 
 
 def feed_data(feed):
-    return {key: getattr(feed, key) for key in (
-        "id", "url", "title", "interval_minutes", "last_checked", "next_check",
+    data = {key: getattr(feed, key) for key in (
+        "id", "url", "custom_title", "interval_minutes", "last_checked", "next_check",
         "history_end", "active", "error", "initial_done", "kind",
     )}
+    return data | {"title": feed.custom_title or feed.title}
 
 
 def unsubscribe(db, feed):
@@ -239,8 +246,10 @@ def unsubscribe(db, feed):
         changed(db, feed.account_id, "article", article_id, "upsert" if starred else "delete")
         kept += starred
         removed += not starred
+    highlights.record_deletions(db, feed.account_id, deleted_ids)
     db.execute(delete(Article).where(Article.id.in_(deleted_ids)))
     changed(db, feed.account_id, "feed", feed.id, "delete")
+    db.execute(delete(Setting).where(Setting.key == "older:" + feed.id))
     db.delete(feed)
     return removed, kept
 
@@ -250,13 +259,15 @@ def import_entry(db, feed, entry):
     if item:
         return False
     article = locate(db, feed.account_id, entry.url, entry.title, entry.published)
+    if pdf_url(entry.url) and article.document_type != "pdf":
+        article = mark_pdf_link(db, article, entry.url)
     db.add(FeedEntry(feed_id=feed.id, key=entry.key, article_id=article.id))
     article.published_at = article.published_at or entry.published
     article.excerpt = article.excerpt or entry.excerpt
     article.author = article.author or entry.author
     if article.title == article.url:
         article.title = entry.title
-    if article.location != "trash" and article.content_status != "cleared":
+    if article.document_type != "pdf" and article.location != "trash" and article.content_status != "cleared":
         if entry.body and (not article.body or article.extractor != "rss"):
             store_body(db, article, entry.body, "rss")
             # Resolve aliases even when a feed supplies the reader body.
@@ -273,17 +284,27 @@ def wordpress_page(url, page):
     return urlunsplit(parts._replace(query=urlencode([*query, ("paged", page)])))
 
 
-def feed_pages(url, fetch_document=fetch, *, older=False):
+def feed_pages(url, fetch_document=fetch, *, older=False, continuation=None, pause=None):
     visited = set()
     seen_keys = set()
     wordpress_url = None
     page = 1
+    previous_keys = set()
+    if continuation:
+        url, wordpress_url, page, previous_keys = continuation
+        seen_keys.update(previous_keys)
     while url and url not in visited:
         if len(visited) >= 50:
             raise FetchError("Feed history exceeded 50 pages in one scan")
         visited.add(url)
         try:
             document = fetch_document(url)
+        except publisher.DeadlineExceeded:
+            if pause is not None and len(visited) > 1:
+                pause(url, wordpress_url, page, previous_keys)
+                yield None, []
+                return
+            raise
         except PublisherHTTPError as error:
             if wordpress_url and error.status in {404, 410}:
                 return
@@ -295,7 +316,7 @@ def feed_pages(url, fetch_document=fetch, *, older=False):
                 return
             raise FetchError("Publisher URL does not contain an RSS or Atom feed")
         title, entries, next_url = parsed
-        if len(visited) == 1 and older and not next_url:
+        if len(visited) == 1 and not continuation and older and not next_url:
             generator = str(feed.feed.get("generator", "")).lower()
             if "wordpress.org" in generator or generator.startswith("wordpress"):
                 wordpress_url = document.url
@@ -303,6 +324,7 @@ def feed_pages(url, fetch_document=fetch, *, older=False):
         if wordpress_url and page > 1 and not keys - seen_keys:
             return
         seen_keys.update(keys)
+        previous_keys = keys
         yield title, entries
         if wordpress_url:
             page += 1
@@ -325,6 +347,8 @@ def select_entries(pages, mode, known, *, today):
     found = 0
     head = []
     for index, (page_title, entries) in enumerate(pages):
+        if page_title is None:
+            return title, candidates, False, head, found, "time_limit"
         found += len(entries)
         if index == 0:
             title, head = page_title, entries
@@ -404,10 +428,20 @@ def refresh(engine, config, feed_id, *, older=False, fetch_document=fetch, job_i
         known = set() if website else set(db.scalars(select(FeedEntry.key).where(FeedEntry.feed_id == feed.id)))
         mode = "older" if older else "refresh" if feed.initial_done else "initial"
         url, previous_newest, last_checked = feed.url, feed.newest_at, feed.last_checked
+        history_key = "older:" + feed_id
+        position = get_setting(db, history_key, None) if older else None
     if website:
         return refresh_website(engine, config, feed_id, fetch_document(url), job_id=job_id, started=started, mode=mode)
+
+    def pause(next_url, wordpress_url, page, seen_keys):
+        nonlocal position
+        position = json.dumps([next_url, wordpress_url, page, sorted(seen_keys) if wordpress_url else []])
+
+    continuing = position is not None
     title, entries, history_end, head, found, stop_reason = select_entries(
-        feed_pages(url, fetch_document, older=older), mode, known, today=datetime.now(UTC)
+        feed_pages(url, fetch_document, older=older, continuation=json.loads(position) if position else None,
+                   pause=pause if older else None),
+        mode, known, today=datetime.now(UTC),
     )
     if mode == "refresh":
         first_known = next((index for index, item in enumerate(head) if item.key in known), 0)
@@ -434,9 +468,18 @@ def refresh(engine, config, feed_id, *, older=False, fetch_document=fetch, job_i
             feed.history_end = history_end
         elif any(item.key not in known and item not in entries for item in head):
             feed.history_end = False
-        feed.title, feed.error, feed.initial_done = title, None, True
+        if older:
+            if history_end and position:
+                db.execute(delete(Setting).where(Setting.key == history_key))
+            elif stop_reason == "time_limit":
+                set_setting(db, history_key, position)
+        if not continuing:
+            feed.title = title
+        feed.error, feed.initial_done = None, True
         changed(db, feed.account_id, "feed", feed.id)
         exhausted = feed.history_end
+        account_id = feed.account_id
     log.info("Feed checked job_id=%s feed_id=%s host=%s mode=%s found=%d selected=%d imported=%d "
              "stop_reason=%s history_exhausted=%s elapsed_ms=%d", job_id, feed_id, urlsplit(url).hostname, mode,
              found, len(entries), imported, stop_reason, exhausted, (monotonic() - started) * 1000)
+    return account_id

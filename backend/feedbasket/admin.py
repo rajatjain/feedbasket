@@ -64,6 +64,7 @@ def local_time(value):
 
 
 templates.env.filters["local_time"] = local_time
+templates.env.filters["backup_time"] = backups.local_time
 
 
 def redirect(message):
@@ -103,7 +104,7 @@ def dashboard(request: Request, message: str = ""):
             pass
     return templates.TemplateResponse(request, "admin.html", {
         "admin_username": config.admin_username, "csrf": token, "backup": backup, "database": config.db_path,
-        "backup_folder_managed": config.backup_folder_managed,
+        "backup_folder_editable": not (config.backup_folder_managed or config.backup_uses_r2),
         "database_mb": round(database_bytes / 1_000_000, 2),
         "jobs": jobs, "feeds": feeds, "allowed": allowed, "accounts": accounts, "configured": bool(config.google_id),
         "feed_interval": feed_interval, "message": message[:240],
@@ -146,13 +147,13 @@ def create_account(request: Request, admin: Admin, token: Annotated[str, Form()]
 def backup_settings(
     request: Request, admin: Admin, token: Annotated[str, Form()],
     frequency: Annotated[Literal["daily", "weekly", "disabled"], Form()],
-    retention: Annotated[int, Form(ge=1, le=365)],
     folder: Annotated[str, Form(max_length=4096)] = "",
 ):
     csrf(request, token)
     config = request.app.state.config
     target = Path(config.backup_folder)
-    if not config.backup_folder_managed:
+    folder_editable = not (config.backup_folder_managed or config.backup_uses_r2)
+    if folder_editable:
         try:
             target = Path(folder.strip()).expanduser()
             if not target.is_absolute():
@@ -164,15 +165,14 @@ def backup_settings(
             return redirect(str(error))
     with write(request.app.state.engine) as db:
         previous = backups.options(db, config)
-        if not config.backup_folder_managed:
+        if folder_editable:
             set_setting(db, "backup_folder", target)
-        set_setting(db, "backup_frequency", frequency)
-        set_setting(db, "backup_retention", retention)
-        if previous["frequency"] != frequency or previous["folder"] != str(target):
-            next_at = now() + backups.INTERVALS[frequency] if frequency in backups.INTERVALS else 0
-            set_setting(db, "backup_next_at", next_at)
-    log.info("Backup settings saved frequency=%s retention=%d destination_changed=%s",
-             frequency, retention, previous["folder"] != str(target))
+        enabled = frequency != "disabled"
+        set_setting(db, "backup_frequency", "daily" if enabled else "disabled")
+        if enabled != previous["enabled"]:
+            set_setting(db, backups.NEXT_AT, 0)
+    log.info("Backup settings saved enabled=%s destination_changed=%s",
+             enabled, folder_editable and previous["folder"] != str(target))
     return redirect("Backup settings saved")
 
 
@@ -180,7 +180,7 @@ def backup_settings(
 def backup_now(request: Request, admin: Admin, token: Annotated[str, Form()]):
     csrf(request, token)
     with write(request.app.state.engine) as db:
-        job_id = enqueue(db, "backup").id
+        job_id = backups.queue_manual(db).id
     log.info("Manual backup requested job_id=%s", job_id)
     return redirect("Backup queued")
 
@@ -239,7 +239,7 @@ def access(
             db.merge(AllowedAccount(email=email))
         else:
             db.execute(delete(AllowedAccount).where(AllowedAccount.email == email))
-            account = db.scalar(select(Account).where(Account.email == email, Account.admin.is_(False)))
+            account = db.scalar(select(Account).where(Account.email == email))
             if account:
                 db.execute(delete(LoginSession).where(LoginSession.account_id == account.id))
                 db.execute(delete(LoginAttempt).where(LoginAttempt.account_id == account.id))

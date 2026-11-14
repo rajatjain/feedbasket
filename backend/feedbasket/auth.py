@@ -40,8 +40,9 @@ def cookie_security(request):
 
 
 def profile(account):
+    # Older Mac clients require the admin field when decoding the profile.
     return {"id": account.id, "email": "" if account.google_sub.startswith("local:") else account.email, "name": account.name,
-            "picture": account.picture, "username": account.username, "admin": account.admin}
+            "picture": account.picture, "username": account.username, "admin": False}
 
 
 def normalized_username(value):
@@ -59,10 +60,10 @@ def set_username(db, account, value):
     account.username = username
 
 
-def create_local_account(db, config, username, *, admin=False):
+def create_local_account(db, config, username):
     account_id = str(uuid4())
     account = Account(id=account_id, google_sub="local:" + account_id,
-                      email=account_id + "@local.invalid", admin=admin, quota=config.quota)
+                      email=account_id + "@local.invalid", quota=config.quota)
     set_username(db, account, username)
     account.name = account.username
     db.add(account)
@@ -71,7 +72,7 @@ def create_local_account(db, config, username, *, admin=False):
 
 
 def allowed(db, account):
-    return account.admin or account.google_sub.startswith("local:") or db.get(AllowedAccount, account.email) is not None
+    return account.google_sub.startswith("local:") or db.get(AllowedAccount, account.email) is not None
 
 
 class UsernameLogin(BaseModel):
@@ -117,16 +118,13 @@ def sign_in(db, config, claims):
         raise HTTPException(403, "Sign in with a Gmail or Google Workspace account")
     subject = claims["sub"]
     account = db.scalar(select(Account).where(Account.google_sub == subject))
-    first = db.scalar(select(Account.id).limit(1)) is None
-    if first and email != config.admin_email:
-        raise HTTPException(403, "Use the Google account configured for initial setup")
-    if not first and not (account and account.admin) and db.get(AllowedAccount, email) is None:
+    if db.get(AllowedAccount, email) is None:
         raise HTTPException(403, "This Google account has not been allowed by the administrator")
     existing_email = db.scalar(select(Account).where(Account.email == email))
     if existing_email and existing_email.google_sub != subject:
         raise HTTPException(403, "This email is already associated with another account")
     if not account:
-        account = Account(id=str(uuid4()), google_sub=subject, email=email, admin=first, quota=config.quota)
+        account = Account(id=str(uuid4()), google_sub=subject, email=email, quota=config.quota)
         db.add(account)
     account.email = email
     account.name = str(claims.get("name", ""))[:200]

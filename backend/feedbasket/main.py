@@ -6,6 +6,7 @@ import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Event
+from uuid import uuid4
 
 import uvicorn
 from sqlalchemy import select
@@ -18,7 +19,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import admin, api, auth, logs, scheduler
 from .config import Config
-from .db import Account, make_engine, write
+from .db import Account, get_setting, make_engine, set_setting, write
 from .updates import SavedUpdates
 
 log = logging.getLogger(__name__)
@@ -34,6 +35,9 @@ def migrate(engine):
     with engine.begin() as connection:
         config.attributes["connection"] = connection
         command.upgrade(config, "head")
+    with write(engine) as db:
+        if get_setting(db, "library_id", None) is None:
+            set_setting(db, "library_id", uuid4())
 
 
 def create_app(config: Config | None = None, *, start_worker=True, configure_logging=False):
@@ -49,7 +53,7 @@ def create_app(config: Config | None = None, *, start_worker=True, configure_log
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
                 raise RuntimeError("Another FeedBasket process is using this database") from error
-            if config.backup_folder_managed:
+            if config.backup_folder_managed and not config.backup_uses_r2:
                 Path(config.backup_folder).mkdir(mode=0o700, parents=True, exist_ok=True)
             if configure_logging:
                 logs.configure(config.logs_path)

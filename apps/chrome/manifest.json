@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "FeedBasket",
   "version": "0.1.0",
-  "description": "Save articles to FeedBasket and subscribe to their feeds.",
+  "description": "Save articles and PDF links to FeedBasket and subscribe to feeds.",
   "minimum_chrome_version": "120",
   "permissions": ["activeTab", "scripting", "storage", "alarms"],
   "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],

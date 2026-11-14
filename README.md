@@ -48,7 +48,7 @@ cp -n feedbasket.example.toml feedbasket.toml
 uv run --locked --env-file ../.env feedbasket
 ```
 
-The CLI creates missing folders on startup. Admin shows the backup destination from `.env` and lets you change the schedule and retention. [CLI Admin](http://127.0.0.1:8787/admin)
+The CLI creates missing folders on startup. Admin shows the backup destination and the next scheduled run. [CLI Admin](http://127.0.0.1:8787/admin)
 
 For local development, add `--reload` to restart the backend automatically when Python source files change:
 
@@ -60,7 +60,11 @@ Prefer pip? From `backend/`, run `pip install .` in an activated virtual environ
 
 ### Accounts and backups
 
-- **Admin** lets you add accounts, manage feed jobs, and schedule or run SQLite backups. A Google Drive–synced folder works for snapshots.
+- **Admin** lets you add accounts, manage feed jobs, and run SQLite backups. Automatic backups run at midnight in `Asia/Kolkata`. Sunday's snapshot is also copied to `weekly/`. Both `daily/` and `weekly/` retain their two newest snapshots. **Back Up Now** writes to `daily/` and leaves the next scheduled run in place.
+
+Set `BACKUP_PREFIX` to the relative path containing `daily/` and `weekly/`. Its default is `backups/`. When the R2 connection fields are set, FeedBasket stores backups at `s3://<bucket>/<BACKUP_PREFIX>/`. The R2 credentials need object read, write, list, and delete access to the bucket. For local storage, set `BACKUP_DESTINATION=local` and use `BACKUP_DIR` as the base folder. Local storage is also the default when the R2 connection fields are empty. A Google Drive–synced folder works as a local destination. Existing snapshots outside the new folders remain available for restore.
+
+To restore a snapshot, download the SQLite file first if it is stored in R2. Stop the backend, move the current database and any `-wal` and `-shm` files aside, then copy the snapshot to `DB_DIR/feedbasket.sqlite` and start the backend. The Mac app shows the backend as offline while it is stopped. After reconnecting, it reloads the restored library and its offline copies.
 
 Existing local accounts with a unique, valid display name can sign in using that name as their username. For other existing local accounts, stop the backend and run `feedbasket account --list`, then `feedbasket account USERNAME --existing-id UUID` with the same backend configuration.
 
@@ -80,24 +84,42 @@ npm run build
 
 The default API URL is `http://127.0.0.1:12000`. If you used the CLI, set it to `http://127.0.0.1:8787` in the popup settings. Purple means the backend is reachable. Gray means it is offline. The badge shows queued saves.
 
-## 3. Build and open the Mac app
+## 3. Build and install the Mac app
 
 You need macOS 14+ and the macOS SDK with Swift 6+ from Xcode or Command Line Tools. From the repo root:
 
 ```sh
-./apps/macos/build-app.sh
-open "apps/macos/dist/FeedBasket.app"
+./apps/macos/build-app.sh --install
+open "$HOME/Applications/FeedBasket.app"
 ```
+
+Running the script without `--install` builds `apps/macos/dist/FeedBasket.app` for direct use.
+
+When a new build replaces the running copy in `~/Applications`, an up-arrow chip appears beside the sidebar logo. Click it to restart or keep reading and restart later.
 
 Use the account menu to sign in or create an account with a username. FeedBasket remembers the account for each server and reconnects automatically on launch. It keeps the server token in memory. Signing out clears the remembered account for that server.
 
 The app defaults to port `12000`. For the CLI backend, change it to port `8787` in **Settings → Connection**. **Settings → Storage** shows how much space offline articles use and lets you clear copies by date or all at once.
 
+Use **+ Add** at the bottom of the sidebar to paste a feed, article, or PDF link, or choose or drop a PDF file. When the sidebar is hidden, **+ Add** moves to the window toolbar. Saved PDFs appear under **Read Later → PDFs** and share tags with articles. Select text in the PDF reader to highlight or underline it. **Library → Highlights** opens the saved passage in its document. To delete an upload from R2, move the PDF to Trash and choose **Delete Permanently** there. Article and PDF quotas are managed separately in **Settings → Storage**.
+
+To save a PDF from Chrome, open the FeedBasket popup on its tab and choose **Save PDF link**. The popup also lets you mark an undetected link as a PDF manually. Reload the unpacked extension from `chrome://extensions` after rebuilding it.
+
+## PDF backend
+
+PDF links use the existing library API. Save one with `POST /api/v1/articles` and `document_type: "pdf"`. The backend also recognizes URLs ending in `.pdf`. `GET /api/v1/links/preview?url=…` identifies direct feeds, articles with optional feed choices, PDFs, and unsupported files.
+
+To enable file uploads, set `R2_ENDPOINT_URL`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` in `.env`. Use a private bucket and an R2 S3 key scoped to it with Object Read & Write permissions. `PDF_PREFIX` defaults to `pdfs/`. Both Docker and the CLI use these settings.
+
+The import API accepts a raw PDF body up to 100 MiB with `filename`, an `import_id` UUID, and optional repeated `tags` query parameters. Reuse the import ID when retrying the same file. The default PDF quota is 5 GB per account, separate from the article body quota. A file in Trash counts until its R2 deletion succeeds. SQLite backups include PDF metadata and object keys. Back up the R2 files separately to recover files after permanent deletion.
+
+The running backend documents the PDF reader endpoints, reading position, highlights, and permanent deletion in `/docs`.
+
 ## Sync and logs
 
 A new RSS subscription imports up to 10 articles dated within the past year. Use **Load older articles** to import earlier or undated posts in batches of up to 10.
 
-Saved articles show up in the open Mac app as soon as it receives a backend update and syncs. The app catches up from its last saved position on launch or reconnect. Feed fetching still follows each feed’s schedule.
+Saved articles show up in the open Mac app as soon as it receives a backend update and syncs. The app catches up from its last saved position on launch or reconnect. Feed fetching still follows each feed’s schedule. Publisher jobs have a shared 60-second deadline for requests and redirects. If **Load older articles** reaches that deadline after reading some pages, it saves its progress for the next request.
 
 - **Backend:** `feedbasket.log` in `LOGS_DIR`. It rotates at 5 MiB and keeps three previous files.
 - **Mac:** **Settings → Diagnostics** opens or copies recent logs. Files are in `~/Library/Logs/FeedBasket`. Rotation is 1 MiB with three previous files.
@@ -112,3 +134,13 @@ uv run --locked pytest --cov=feedbasket
 ```
 
 The suite uses temporary SQLite files and captured publisher data. Coverage excludes `auth.py`. Use `FEEDBASKET_LIVE_TESTS=1` to include the live NASA test. The running backend also serves interactive API docs at `/docs`.
+
+### Live Cloudflare R2 smoke test
+
+With the R2 credentials in the repo's `.env`, run from `backend/`:
+
+```sh
+FEEDBASKET_LIVE_R2_TESTS=1 uv run --locked --env-file ../.env pytest tests/test_live_r2.py
+```
+
+The test creates the `tests/` folder marker if needed. It uploads a generated PDF through the backend into a unique prefix under `tests/`, downloads and compares the bytes, then deletes that PDF. The folder marker remains visible in Cloudflare. The default suite uses a local object-storage endpoint.

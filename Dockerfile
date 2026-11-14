@@ -7,12 +7,15 @@ FROM ghcr.io/astral-sh/uv:0.8.4 AS uv
 
 FROM python:3.13-slim-bookworm AS build
 COPY --from=uv /uv /usr/local/bin/uv
+ENV UV_LINK_MODE=copy
 WORKDIR /app
 COPY backend/pyproject.toml backend/uv.lock ./
-RUN uv sync --locked --no-dev --no-install-project
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev --no-install-project
 COPY backend/feedbasket ./feedbasket
 COPY backend/migrations ./migrations
-RUN uv sync --locked --no-dev --no-editable
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev --no-editable
 
 FROM python:3.13-slim-bookworm
 ENV PATH="/app/.venv/bin:$PATH" \

@@ -58,13 +58,22 @@ struct BasketStyle {
                      blue: Double(value & 255) / 255)
     }
     func css(_ pair: (UInt32, UInt32)) -> String { String(format: "#%06x", hex(pair)) }
-    var accentPair: (UInt32, UInt32) { BasketTokens.accents[accentName] ?? BasketTokens.accents["green"]! }
+    static func palette(for name: String) -> BasketTokens.Palette {
+        let id = BasketTokens.paletteAliases[name] ?? name
+        return BasketTokens.palettes.first { $0.id == id } ?? BasketTokens.palettes.first { $0.id == BasketTokens.defaultPalette }!
+    }
+
+    var palette: BasketTokens.Palette { Self.palette(for: accentName) }
+    var readingSurface: (UInt32, UInt32) { (0xffffff, palette.surface.1) }
+    var accentPair: (UInt32, UInt32) { palette.accent }
+    var selection: Color { color(palette.selection) }
+    var selectionText: Color { color((0x252924, 0x252924)) }
     var accent: Color { color(accentPair) }
 }
 
 struct BasketAppearance: ViewModifier {
     @AppStorage("theme") private var theme = BasketTheme.system
-    @AppStorage("accent") private var accent = "green"
+    @AppStorage("accent") private var accent = BasketTokens.defaultPalette
 
     func body(content: Content) -> some View {
         BasketSurface(accent: accent) { content }
@@ -82,7 +91,7 @@ private struct BasketSurface<Content: View>: View {
         content
             .font(.system(size: BasketTokens.bodySize))
             .foregroundStyle(style.color(BasketTokens.text))
-            .background(style.color(BasketTokens.surface))
+            .background(style.color(style.palette.surface))
             .tint(style.accent)
             .environment(\.basketStyle, style)
             .onChange(of: scheme, initial: true) { _, scheme in
@@ -93,13 +102,31 @@ private struct BasketSurface<Content: View>: View {
 }
 
 private struct BasketStyleKey: EnvironmentKey {
-    static let defaultValue = BasketStyle(scheme: .light, accentName: "green")
+    static let defaultValue = BasketStyle(scheme: .light, accentName: BasketTokens.defaultPalette)
 }
 
 extension EnvironmentValues {
     var basketStyle: BasketStyle {
         get { self[BasketStyleKey.self] }
         set { self[BasketStyleKey.self] = newValue }
+    }
+}
+
+private struct BasketSelection: ViewModifier {
+    @Environment(\.basketStyle) private var style
+    let selected: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.basketStyle, selected ? .init(scheme: .light, accentName: style.accentName) : style)
+            .foregroundStyle(selected ? style.selectionText : style.color(BasketTokens.text))
+            .listRowBackground(selected ? style.selection : Color.clear)
+    }
+}
+
+extension View {
+    func basketSelection(_ selected: Bool) -> some View {
+        modifier(BasketSelection(selected: selected))
     }
 }
 
@@ -161,17 +188,18 @@ private enum FeedBasketArtwork {
 
 struct FeedBasketWordmark: View {
     @Environment(\.basketStyle) private var style
+    var compact = false
 
     var body: some View {
-        HStack(spacing: BasketTokens.spacing) {
+        HStack(spacing: compact ? BasketTokens.spacing / 2 : BasketTokens.spacing) {
             if let icon = style.scheme == .dark ? FeedBasketArtwork.darkIcon : FeedBasketArtwork.lightIcon {
                 Image(nsImage: icon)
                     .resizable()
-                    .frame(width: 25, height: 25)
+                    .frame(width: compact ? 22 : 25, height: compact ? 22 : 25)
                     .accessibilityHidden(true)
             }
             Text("feedbasket")
-                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .font(.system(size: compact ? 18 : 22, weight: .bold, design: .rounded))
                 .foregroundStyle(style.accent)
                 .tracking(-0.65)
                 .lineLimit(1)

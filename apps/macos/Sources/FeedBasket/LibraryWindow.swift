@@ -2,12 +2,14 @@ import AppKit
 import SwiftUI
 
 enum Shelf: Hashable {
-    case rss, feed(String), saved, tag(String), starred, archive, trash
+    case rss, feed(String), saved, pdfs, highlights, tag(String), starred, archive, trash
 
     var label: String {
         switch self {
         case .rss, .saved: "All articles"
         case .feed: "Subscription"
+        case .pdfs: "PDFs"
+        case .highlights: "Highlights"
         case .tag(let name): name
         case .starred: "Starred"
         case .archive: "Archive"
@@ -17,7 +19,18 @@ enum Shelf: Hashable {
 }
 
 struct LibraryWindow: View {
+    private struct AddRequest: Identifiable {
+        var file: URL? = nil
+        let id = UUID()
+    }
+
+    private struct FeedRename: Identifiable {
+        let feed: Feed
+        var id: String { feed.id }
+    }
+
     @Environment(BasketStore.self) private var store
+    @Environment(InstalledAppUpdate.self) private var update
     @Environment(\.basketStyle) private var style
     @AppStorage("theme") private var theme = BasketTheme.system
     @BasketState private var showingServerStatus = false
@@ -30,7 +43,13 @@ struct LibraryWindow: View {
     @BasketState private var readerFocused = false
     @BasketState private var showSubscriptions: Bool = true
     @BasketState private var showSaved: Bool = true
-    @BasketState private var addingFeed: Bool = false
+    @BasketState private var feedRename: FeedRename? = nil
+    @BasketState private var addRequest: AddRequest? = nil
+    @BasketState private var highlightSelection: String? = nil
+    @BasketState private var savedSelection: String? = nil
+    @BasketState private var deletingPDF: Article? = nil
+    @BasketState private var documentType: String = "All"
+    @BasketState private var unsubscribingFeed: Feed? = nil
     @BasketState private var source: String = "All"
     @BasketState private var limit: Int = 100
 
@@ -57,28 +76,41 @@ struct LibraryWindow: View {
         readFilter == "All" || article.read == (readFilter == "Read")
     }
 
-    private var visible: [Article] {
+    private var documentShelf: [Article] {
         store.library.articles.keys.compactMap(store.article).filter { article in
             let rss = article.feed_ids.contains { store.library.feeds[$0] != nil }
             let saved = article.saved_at != nil
             if hasSourceFilter {
                 let matchesShelf = current == .starred ? article.isStarred && article.location != "trash"
                     : article.location == (current == .archive ? "archive" : "trash")
-                return matchesShelf && (source == "All" || (source == "Subscriptions" && rss) || (source == "Read Later" && saved))
+                return matchesShelf
             }
-            // Keep selected articles visible if auto-read or sync changes their read status.
-            guard article.location == "inbox",
-                  selection.contains(article.id) || matchesReadFilter(article) else { return false }
+            guard article.location == "inbox" else { return false }
             switch current {
             case .rss: return rss
             case .feed(let id): return article.feed_ids.contains(id) && store.library.feeds[id] != nil
-            case .saved: return saved
+            case .saved: return saved && !article.isPDF
+            case .pdfs: return saved && article.isPDF
             case .tag(let tag): return saved && article.tags.contains(tag)
             default: return false
             }
+        }
+    }
+
+    private var hasMixedTypes: Bool { Set(documentShelf.map(\.isPDF)).count > 1 }
+
+    private func filtered(_ documents: [Article], mixed: Bool) -> [Article] {
+        documents.filter { article in
+            if hasSourceFilter {
+                if source == "Subscriptions" && !article.feed_ids.contains(where: { store.library.feeds[$0] != nil }) { return false }
+                if source == "Read Later" && article.saved_at == nil { return false }
+            } else if !selection.contains(article.id) && !matchesReadFilter(article) {
+                return false
+            }
+            return !mixed || documentType == "All" || article.isPDF == (documentType == "PDFs")
         }.sorted { left, right in
             let saved: Bool
-            switch current { case .saved, .tag: saved = true; default: saved = false }
+            switch current { case .saved, .pdfs, .tag: saved = true; default: saved = false }
             let a = saved ? left.saved_at ?? 0 : left.date.timeIntervalSince1970
             let b = saved ? right.saved_at ?? 0 : right.date.timeIntervalSince1970
             return a == b ? left.id < right.id : a > b
@@ -86,26 +118,37 @@ struct LibraryWindow: View {
     }
 
     var body: some View {
-        let articles = visible
+        let documents = documentShelf
+        let mixed = Set(documents.map(\.isPDF)).count > 1
+        let articles = filtered(documents, mixed: mixed)
         let displayed = articles.prefix(limit)
         let selectedArticles = displayed.filter { selection.contains($0.id) }
-        let article = selectedArticles.count == 1 && selection.count == 1 ? selectedArticles.first : nil
+        let highlight = current == .highlights ? highlightSelection.flatMap { store.library.highlights?[$0] } : nil
+        let article = current == .highlights ? highlight.flatMap { store.article($0.article_id) }
+            : selectedArticles.count == 1 && selection.count == 1 ? selectedArticles.first : nil
         Group {
             if readerFocused, let article {
-                reader(article)
+                reader(article, highlight: highlight)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(style.color(style.readingSurface).ignoresSafeArea())
                     .onExitCommand { readerFocused = false }
                     .modifier(BasketToastOverlay(location: .reader))
             } else {
                 NavigationSplitView(columnVisibility: $columns) {
                     sidebar.navigationSplitViewColumnWidth(min: 155, ideal: 182, max: 250)
                 } content: {
-                    articleList(articles, selectedArticles: selectedArticles)
+                    Group {
+                        if current == .highlights {
+                            HighlightsShelf(selection: $highlightSelection)
+                        } else {
+                            articleList(articles, selectedArticles: selectedArticles, mixed: mixed)
+                        }
+                    }
                         .navigationSplitViewColumnWidth(min: 230, ideal: 285, max: 380)
                 } detail: {
                     Group {
                         if let article {
-                            reader(article)
+                            reader(article, highlight: highlight)
                         } else if store.profile == nil {
                             ContentUnavailableView {
                                 Label("Open your library", systemImage: "person.crop.circle")
@@ -118,9 +161,12 @@ struct LibraryWindow: View {
                         } else if selectedArticles.count > 1 {
                             BasketEmpty(title: "\(selectedArticles.count) articles selected", icon: "doc.on.doc")
                         } else {
-                            BasketEmpty(title: "Select an article", icon: "doc.text")
+                            BasketEmpty(title: current == .highlights ? "Select a highlight" : current == .pdfs ? "Select a PDF" : "Select an item",
+                                        icon: current == .highlights ? "highlighter" : "doc.text")
                         }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(style.color(style.readingSurface).ignoresSafeArea())
                     .modifier(BasketToastOverlay(location: .reader))
                 }
                 .navigationSplitViewStyle(.balanced)
@@ -129,20 +175,53 @@ struct LibraryWindow: View {
         .focusedSceneValue(\.selectedArticleActions, article.map { article in
             SelectedArticleActions(article: article, perform: { perform($0, on: article) })
         })
+        .toolbar {
+            if readerFocused || columns == .doubleColumn || columns == .detailOnly {
+                if #available(macOS 26, *) {
+                    ToolbarItem(placement: .primaryAction) { LibraryAddButton(action: showAdd) }
+                        .sharedBackgroundVisibility(.hidden)
+                } else {
+                    ToolbarItem(placement: .primaryAction) { LibraryAddButton(action: showAdd) }
+                }
+            }
+        }
         .toolbarBackground(.hidden, for: .windowToolbar)
+        .dropDestination(for: URL.self) { urls, _ in
+            guard addRequest == nil, let file = urls.first, file.isFileURL else { return false }
+            addRequest = AddRequest(file: file)
+            return true
+        }
         .background {
             if store.canUndoArticleChange {
                 ArticleUndoShortcut(undo: store.undoArticleChange)
             }
         }
-        .onChange(of: shelf) { selection = []; scrollTarget = nil; source = "All"; limit = 100 }
+        .onChange(of: shelf) {
+            highlightSelection = nil
+            documentType = "All"
+            source = "All"
+            limit = 100
+            if let savedSelection { selectSavedItem(savedSelection) }
+            else { selection = []; scrollTarget = nil }
+            savedSelection = nil
+        }
+        .onChange(of: mixed) { if !mixed { documentType = "All" } }
         .onChange(of: readFilter) {
             if selection.count > 1 || article.map({ !matchesReadFilter($0) }) == true { selection = [] }
         }
         .onChange(of: displayed.map(\.id)) { _, ids in selection.formIntersection(ids) }
         .onChange(of: article == nil) { if article == nil { readerFocused = false } }
         .onChange(of: store.profile?.id) { shelf = .rss; selection = []; username = "" }
-        .onChange(of: store.updateScope) { addingFeed = false; selection = []; scrollTarget = nil }
+        .onChange(of: store.updateScope) {
+            feedRename = nil
+            addRequest = nil
+            deletingPDF = nil
+            savedSelection = nil
+            highlightSelection = nil
+            unsubscribingFeed = nil
+            selection = []
+            scrollTarget = nil
+        }
         .alert("Sign in", isPresented: $showingSignIn) {
             TextField("Username", text: $username)
             Button("Sign in") { store.signIn(username) }
@@ -153,18 +232,70 @@ struct LibraryWindow: View {
         } message: {
             Text("Enter your username. Choose Create account to register a new one.")
         }
-        .sheet(isPresented: $addingFeed) {
-            SubscriptionSheet { feed in
+        .sheet(item: $feedRename) { RenameFeedSheet(feed: $0.feed) }
+        .sheet(item: $addRequest) { request in
+            AddSheet(initialFile: request.file, tags: tags, didSave: openSavedItem) { feed in
                 showSubscriptions = true
                 shelf = .feed(feed.id)
             }
         }
+        .alert(item: $deletingPDF, content: deletePDFAlert)
+        .confirmationDialog("Unsubscribe from \(unsubscribingFeed?.title ?? "this feed")?",
+                            isPresented: Binding(get: { unsubscribingFeed != nil }, set: {
+                                if !$0 { unsubscribingFeed = nil }
+                            }), presenting: unsubscribingFeed) { feed in
+            Button("Unsubscribe and Delete", role: .destructive) { Task { await store.unsubscribe(feed) } }
+        } message: { _ in
+            Text("Unstarred articles will be permanently deleted, including copies in Read Later, Archive, Trash, and other feeds. Starred articles will be kept.")
+        }
     }
 
-    private func reader(_ article: Article) -> some View {
-        ArticleReader(article: article, isFocused: readerFocused, focus: { readerFocused.toggle() },
-                      perform: { perform($0, on: article) })
-            .id("\(store.updateScope)-\(article.id)")
+    private func deletePDFAlert(_ document: Article) -> Alert {
+        let message = document.pdf?.source == "upload"
+            ? "The PDF will be deleted from Cloudflare R2 and its highlights will be removed from your library."
+            : "The saved link and its highlights will be removed from your library."
+        return Alert(title: Text("Permanently delete PDF?"), message: Text(message),
+                     primaryButton: .destructive(Text("Delete Permanently")) {
+                         Task { await store.permanentlyDeletePDF(document) }
+                     }, secondaryButton: .cancel())
+    }
+
+    private func showAdd() {
+        addRequest = AddRequest()
+    }
+
+    private func openSavedItem(_ article: Article) {
+        showSaved = true
+        readerFocused = false
+        readFilter = "All"
+        let destination: Shelf = article.isPDF ? .pdfs : .saved
+        if shelf == destination { selectSavedItem(article.id) }
+        else {
+            savedSelection = article.id
+            shelf = destination
+        }
+    }
+
+    private func selectSavedItem(_ id: String) {
+        selection = [id]
+        if let index = filtered(documentShelf, mixed: hasMixedTypes).firstIndex(where: { $0.id == id }) {
+            limit = max(limit, index + 1)
+        }
+        scrollTarget = id
+    }
+
+    private func reader(_ article: Article, highlight: Highlight?) -> some View {
+        Group {
+            if article.isPDF {
+                PDFReader(article: article, highlight: highlight, tags: tags, isFocused: readerFocused,
+                          focus: { readerFocused.toggle() }, perform: { perform($0, on: article) },
+                          delete: { deletingPDF = article })
+            } else {
+                ArticleReader(article: article, highlight: highlight, isFocused: readerFocused, focus: { readerFocused.toggle() },
+                              perform: { perform($0, on: article) })
+            }
+        }
+        .id("\(store.updateScope)-\(article.id)")
     }
 
     private var feedsWithUnreadArticles: Set<String> {
@@ -186,23 +317,16 @@ struct LibraryWindow: View {
             unreadFeedIDs.contains(feed.id) || shelf == .feed(feed.id)
         }
         return List(selection: $shelf) {
-            sidebarHeader {
-                HStack {
-                    disclosure("Subscriptions", expanded: $showSubscriptions)
-                    Spacer()
-                    Button { addingFeed = true } label: {
-                        Label("Add subscription", systemImage: "plus").labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Add subscription")
-                    .disabled(!store.canUseAPI)
-                }
-            }
+            sidebarHeader { disclosure("Subscriptions", expanded: $showSubscriptions) }
             if showSubscriptions {
-                Label("All articles", systemImage: "dot.radiowaves.left.and.right").tag(Shelf.rss)
+                Label("All articles", systemImage: "dot.radiowaves.left.and.right").tag(Shelf.rss).basketSelection(shelf == .rss)
                 ForEach(visibleFeeds) { feed in
-                    feedRow(feed, hasUnread: unreadFeedIDs.contains(feed.id))
+                    SidebarFeedRow(feed: feed, selected: shelf == .feed(feed.id),
+                                   hasUnread: unreadFeedIDs.contains(feed.id),
+                                   rename: { feedRename = FeedRename(feed: feed) },
+                                   unsubscribe: { unsubscribingFeed = feed })
                         .tag(Shelf.feed(feed.id))
+                        .basketSelection(shelf == .feed(feed.id))
                 }
                 if !subscriptions.isEmpty {
                     Button {
@@ -223,23 +347,36 @@ struct LibraryWindow: View {
             sidebarSectionDivider
             sidebarHeader { disclosure("Read Later", expanded: $showSaved) }
             if showSaved {
-                Label("All articles", systemImage: "bookmark").tag(Shelf.saved)
-                ForEach(tags, id: \.self) { tag in Label(tag, systemImage: "tag").tag(Shelf.tag(tag)) }
+                Label("All articles", systemImage: "bookmark").tag(Shelf.saved).basketSelection(shelf == .saved)
+                Label("PDFs", systemImage: "doc.richtext").tag(Shelf.pdfs).basketSelection(shelf == .pdfs)
+                ForEach(tags, id: \.self) { tag in Label(tag, systemImage: "tag").tag(Shelf.tag(tag)).basketSelection(shelf == .tag(tag)) }
             }
             sidebarSectionDivider
             sidebarHeader { Text("Library").fontWeight(.semibold) }
-            Label("Starred", systemImage: "star").tag(Shelf.starred)
-            Label("Archive", systemImage: "archivebox").tag(Shelf.archive)
-            Label("Trash", systemImage: "trash").tag(Shelf.trash)
+            Label("Highlights", systemImage: "highlighter").tag(Shelf.highlights).basketSelection(shelf == .highlights)
+            Label("Starred", systemImage: "star").tag(Shelf.starred).basketSelection(shelf == .starred)
+            Label("Archive", systemImage: "archivebox").tag(Shelf.archive).basketSelection(shelf == .archive)
+            Label("Trash", systemImage: "trash").tag(Shelf.trash).basketSelection(shelf == .trash)
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .background(style.color(style.palette.sidebar))
         .safeAreaInset(edge: .top, alignment: .leading, spacing: 0) {
-            FeedBasketWordmark()
-                .padding(.horizontal, BasketTokens.spacing * 1.5)
-                .padding(.vertical, BasketTokens.spacing)
+            HStack(spacing: BasketTokens.spacing / 2) {
+                FeedBasketWordmark(compact: update.isReady)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if update.isReady {
+                    AppUpdateChip(restart: update.restart)
+                }
+            }
+            .padding(.horizontal, update.isReady ? BasketTokens.spacing : BasketTokens.spacing * 1.5)
+            .padding(.vertical, BasketTokens.spacing)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            sidebarFooter
+            VStack(spacing: 0) {
+                LibraryAddFooter(action: showAdd)
+                sidebarFooter
+            }
         }
     }
 
@@ -254,35 +391,12 @@ struct LibraryWindow: View {
             .accessibilityHidden(true)
     }
 
-    private func feedRow(_ feed: Feed, hasUnread: Bool) -> some View {
-        HStack(spacing: 6) {
-            Label {
-                Text(feed.title)
-                    .fontWeight(hasUnread ? .semibold : .regular)
-                    .lineLimit(1)
-            } icon: {
-                Image(systemName: feed.isWebsite ? "globe" : "newspaper")
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            if hasUnread {
-                Circle()
-                    .fill(shelf == .feed(feed.id) ? AnyShapeStyle(.primary) : AnyShapeStyle(style.accent))
-                    .frame(width: 7, height: 7)
-                    .padding(.trailing, 3)
-                    .accessibilityHidden(true)
-            }
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(hasUnread ? "Unread articles" : "")
-    }
-
     private var sidebarFooter: some View {
         let status = BasketStatus(online: store.reachable)
         let nextTheme: BasketTheme = style.scheme == .dark ? .light : .dark
         let themeAction = nextTheme == .light ? "Switch to Light Mode" : "Switch to Dark Mode"
         return VStack(spacing: 0) {
-            Divider()
+            Rectangle().fill(style.color(BasketTokens.line)).frame(height: 1).accessibilityHidden(true)
             HStack(spacing: 6) {
                 Button {
                     theme = nextTheme
@@ -369,7 +483,7 @@ struct LibraryWindow: View {
         }.buttonStyle(.plain)
     }
 
-    private func articleList(_ articles: [Article], selectedArticles: [Article]) -> some View {
+    private func articleList(_ articles: [Article], selectedArticles: [Article], mixed: Bool) -> some View {
         return VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: BasketTokens.spacing) {
                 HStack {
@@ -379,15 +493,17 @@ struct LibraryWindow: View {
                         .accessibilityAddTraits(.isHeader)
                     Spacer(minLength: BasketTokens.spacing)
                     if let feed = currentFeed {
-                        FeedMenu(feed: feed).id(feed.id)
+                        FeedMenu(feed: feed, rename: { feedRename = FeedRename(feed: feed) },
+                                 unsubscribe: { unsubscribingFeed = feed })
+                            .id(feed.id)
                     }
-                }
-                if hasSourceFilter {
-                    Picker("Source", selection: $source) {
-                        ForEach(["All", "Subscriptions", "Read Later"], id: \.self) { Text($0) }
-                    }
-                } else {
-                    readStatusPicker
+                    LibraryFilter(groups: (hasSourceFilter ? [
+                        .init(title: "Source", options: ["All", "Subscriptions", "Read Later"], selection: $source),
+                    ] : [
+                        .init(title: "Read status", options: ["All", "Unread", "Read"], selection: $readFilter),
+                    ]) + (mixed ? [
+                        .init(title: "Type", options: ["All", "Articles", "PDFs"], selection: $documentType),
+                    ] : []))
                 }
             }.padding(BasketTokens.spacing * 1.4)
             Divider()
@@ -404,7 +520,7 @@ struct LibraryWindow: View {
                     emptyReadFilter
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    BasketEmpty(title: "No articles", icon: "tray")
+                    BasketEmpty(title: current == .pdfs ? "No PDFs" : "No items", icon: "tray")
                 }
             } else {
                 ScrollViewReader { proxy in
@@ -412,6 +528,7 @@ struct LibraryWindow: View {
                         ForEach(articles.prefix(limit)) { article in
                             ArticleRow(article: article, archive: hasSourceFilter)
                                 .tag(article.id)
+                                .basketSelection(selection.contains(article.id))
                         }
                         if articles.count > limit {
                             Button("Show more") { limit += 100 }.buttonStyle(BasketButton()).selectionDisabled()
@@ -422,9 +539,14 @@ struct LibraryWindow: View {
                         }
                     }
                     .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
                     .contextMenu(forSelectionType: String.self) { ids in
                         let targets = articles.prefix(limit).filter { ids.contains($0.id) }
                         if targets.count == 1, let article = targets.first {
+                            if article.isPDF && article.location == "trash" {
+                                Button("Delete Permanently…", role: .destructive) { deletingPDF = article }
+                                    .disabled(!store.canUseAPI || article.pdf?.deletion_pending == true)
+                            }
                             ForEach(ArticleAction.allCases, id: \.self) { action in
                                 if action.allows(article) {
                                     Button(action.title(for: article)) { perform(action, on: article) }
@@ -450,26 +572,18 @@ struct LibraryWindow: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(style.color(style.readingSurface).ignoresSafeArea())
         .modifier(BasketToastOverlay(location: .articleList))
-    }
-
-    private var readStatusPicker: some View {
-        Picker("Read status", selection: $readFilter) {
-            Text("All").tag("All")
-            Text("Unread").tag("Unread")
-            Text("Read").tag("Read")
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .frame(maxWidth: .infinity)
     }
 
     private var emptyReadFilter: some View {
         VStack(spacing: BasketTokens.spacing) {
-            Text(readFilter == "All" ? "No articles" : "No \(readFilter.lowercased()) articles")
+            let noun = current == .pdfs ? "PDFs" : "items"
+            Text(readFilter == "All" ? "No \(noun)" : "No \(readFilter.lowercased()) \(noun)")
                 .font(.headline)
             if readFilter != "All" {
-                Button("Show all articles") { readFilter = "All" }.buttonStyle(.link)
+                Button("Show all") { readFilter = "All" }.buttonStyle(.link)
             }
         }
     }
@@ -493,7 +607,7 @@ struct LibraryWindow: View {
         case .star:
             store.change(Mutation(articleID: latest.id, starred: !latest.isStarred))
         case .archive, .dislike:
-            let articles = selected == latest.id ? visible : []
+            let articles = selected == latest.id ? filtered(documentShelf, mixed: hasMixedTypes) : []
             let nextIndex = articles.firstIndex { $0.id == latest.id }.map { $0 + 1 }
             let mutation = Mutation(articleID: latest.id, action: action == .archive ? "archive" : "trash")
             guard store.change(mutation), let nextIndex else { return }

@@ -58,6 +58,9 @@ struct ReaderPage: NSViewRepresentable {
     let preferences: ReadingPreferences
     let linkedFeeds: [SubscriptionPreview.Candidate]
     let subscribe: (SubscriptionPreview.Candidate) -> Void
+    let highlights: [Highlight]
+    let targetHighlight: Highlight?
+    let bridge: ArticleSelection
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -66,6 +69,7 @@ struct ReaderPage: NSViewRepresentable {
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
         configuration.websiteDataStore = .nonPersistent()
         let view = WKWebView(frame: .zero, configuration: configuration)
+        bridge.webView = view
         view.navigationDelegate = context.coordinator
         return view
     }
@@ -74,6 +78,8 @@ struct ReaderPage: NSViewRepresentable {
         let card = PublisherCardStyle.compact
         context.coordinator.feeds = linkedFeeds
         context.coordinator.subscribe = subscribe
+        context.coordinator.highlights = highlights
+        context.coordinator.target = targetHighlight
         let html = """
         <!doctype html><html><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -81,12 +87,13 @@ struct ReaderPage: NSViewRepresentable {
         <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: https: http:">
         <style>
         html { color-scheme: \(style.scheme == .dark ? "dark" : "light"); }
-        body { margin: 0; background: \(style.css(BasketTokens.surface)); color: \(style.css(BasketTokens.text)); }
+        body { margin: 0; background: \(style.css(style.readingSurface)); color: \(style.css(BasketTokens.text)); }
         article { max-width: \(preferences.columnWidth)px; margin: 0 auto;
                   padding: 0 \(ReadingPreferences.horizontalInset)px 32px; overflow-wrap: anywhere;
                   font: \(preferences.size)px/\(preferences.lineHeight) \(preferences.cssFont); text-align: \(preferences.textAlignment); }
         article > :first-child { margin-block-start: 0; }
         a { color: \(style.css(style.accentPair)); }
+        ::highlight(feedbasket) { background-color: #ffe873; color: #202020; }
         img { max-width: 100%; height: auto; }
         pre { overflow: auto; text-align: left; }
         blockquote { margin-inline: 0; border-left: 2px solid \(style.css(BasketTokens.line)); padding-left: 16px; }
@@ -107,7 +114,7 @@ struct ReaderPage: NSViewRepresentable {
         #linked-feeds small { display: block; color: \(style.css(PublisherCardStyle.secondaryText)); }
         #linked-feeds a { flex: none; padding: 2px 7px; font-size: 12px; border-radius: 5px;
                           border: 1px solid \(style.css(BasketTokens.line)); text-decoration: none;
-                          background: \(style.css(BasketTokens.surface)); }
+                          background: \(style.css(style.readingSurface)); }
         #linked-feeds a:hover { text-decoration: underline; }
         </style></head><body><article>\(body)<details id="linked-feeds" hidden>
         <summary></summary><ul></ul></details></article></body></html>
@@ -116,9 +123,12 @@ struct ReaderPage: NSViewRepresentable {
             context.coordinator.html = html
             context.coordinator.loaded = false
             context.coordinator.renderedIDs = nil
+            context.coordinator.renderedHighlights = nil
+            context.coordinator.renderedTarget = nil
             view.loadHTMLString(html, baseURL: nil)
         } else {
             context.coordinator.updateFooter(in: view)
+            context.coordinator.updateHighlights(in: view)
         }
     }
 
@@ -128,10 +138,48 @@ struct ReaderPage: NSViewRepresentable {
         var renderedIDs: [String]?
         var feeds: [SubscriptionPreview.Candidate] = []
         var subscribe: ((SubscriptionPreview.Candidate) -> Void)?
+        var highlights: [Highlight] = []
+        var target: Highlight?
+        var renderedHighlights: [String]?
+        var renderedTarget: String?
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             loaded = true
             updateFooter(in: webView)
+            updateHighlights(in: webView)
+        }
+
+        func updateHighlights(in webView: WKWebView) {
+            let ids = highlights.map(\.id)
+            guard loaded, renderedHighlights != ids || renderedTarget != target?.id else { return }
+            let jump = renderedTarget != target?.id ? target?.id : nil
+            renderedHighlights = ids
+            renderedTarget = target?.id
+            let marks = highlights.map { mark in
+                ["id": mark.id, "quote": mark.quote, "prefix": mark.anchor.prefix ?? "", "suffix": mark.anchor.suffix ?? ""]
+            }
+            webView.callAsyncJavaScript(ArticleSelection.textIndex + """
+                const ranges = [];
+                for (const mark of marks) {
+                    let index = text.indexOf(mark.quote);
+                    while (index !== -1) {
+                        const end = index + mark.quote.length;
+                        if (text.slice(0, index).endsWith(mark.prefix) && text.startsWith(mark.suffix, end)) {
+                            const startNode = nodes.find(node => index < node.end);
+                            const endNode = nodes.find(node => end <= node.end);
+                            if (!startNode || !endNode) break;
+                            const range = new Range();
+                            range.setStart(startNode.node, index - startNode.start);
+                            range.setEnd(endNode.node, end - endNode.start);
+                            ranges.push(range);
+                            if (mark.id === target) window.scrollBy(0, range.getBoundingClientRect().top - 90);
+                            break;
+                        }
+                        index = text.indexOf(mark.quote, index + 1);
+                    }
+                }
+                if (CSS.highlights) CSS.highlights.set('feedbasket', new Highlight(...ranges));
+                """, arguments: ["marks": marks, "target": jump ?? ""], in: nil, in: .defaultClient, completionHandler: nil)
         }
 
         func updateFooter(in webView: WKWebView) {
@@ -191,10 +239,54 @@ struct ReaderPage: NSViewRepresentable {
     }
 }
 
+@MainActor
+final class ArticleSelection {
+    weak var webView: WKWebView?
+
+    static let textIndex = """
+        const article = document.querySelector('article');
+        const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT, {
+            acceptNode: node => node.parentElement.closest('#linked-feeds') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
+        });
+        let text = '';
+        const nodes = [];
+        while (walker.nextNode()) {
+            const node = walker.currentNode;
+            const start = text.length;
+            text += node.data;
+            nodes.push({ node, start, end: text.length });
+        }
+        """
+
+    func selectedText() async throws -> (quote: String, anchor: Highlight.Anchor)? {
+        guard let webView else { return nil }
+        let result = try await webView.callAsyncJavaScript(Self.textIndex + """
+            const selection = window.getSelection();
+            if (!selection?.rangeCount || selection.isCollapsed) return null;
+            const range = selection.getRangeAt(0);
+            if (!article.contains(range.startContainer) || !article.contains(range.endContainer)) return null;
+            const selected = nodes.filter(entry => range.intersectsNode(entry.node));
+            if (!selected.length) return null;
+            const first = selected[0], last = selected[selected.length - 1];
+            const start = first.start + (range.startContainer === first.node ? range.startOffset : 0);
+            const end = last.start + (range.endContainer === last.node ? range.endOffset : last.node.length);
+            return { quote: text.slice(start, end), prefix: Array.from(text.slice(0, start)).slice(-128).join(''),
+                suffix: Array.from(text.slice(end)).slice(0, 128).join('') };
+            """, arguments: [:], in: nil, contentWorld: .defaultClient)
+        guard let result = result as? [String: String], let quote = result["quote"],
+              !quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        guard quote.unicodeScalars.count <= 8000 else {
+            throw APIError(status: 0, detail: "Select a shorter passage to highlight.")
+        }
+        return (quote, .init(kind: "article", prefix: result["prefix"] ?? "", suffix: result["suffix"] ?? ""))
+    }
+}
+
 struct ArticleReader: View {
     @Environment(BasketStore.self) private var store
     @Environment(\.basketStyle) private var style
     let article: Article
+    let highlight: Highlight?
     let isFocused: Bool
     let focus: () -> Void
     let perform: (ArticleAction) -> Void
@@ -212,6 +304,8 @@ struct ArticleReader: View {
     @BasketState private var discoveredFeeds: [SubscriptionPreview.Candidate] = []
     @BasketState private var subscribing: Set<String> = []
     @BasketState private var manuallyChangedReadStatus = false
+    @BasketState private var selectionBridge = ArticleSelection()
+    @BasketState private var savingHighlight = false
 
     private var alignment: ReaderAlignment {
         ReaderAlignment(rawValue: storedAlignment) ?? .left
@@ -234,7 +328,9 @@ struct ArticleReader: View {
                 .readerColumn(width: preferences.columnWidth)
             if let html = store.html(for: article.id) {
                 ReaderPage(body: html, style: style, preferences: preferences,
-                           linkedFeeds: linkedFeeds, subscribe: subscribeToLinkedFeed)
+                           linkedFeeds: linkedFeeds, subscribe: subscribeToLinkedFeed,
+                           highlights: (store.library.highlights ?? [:]).values.filter { $0.article_id == article.id }.sorted { $0.id < $1.id },
+                           targetHighlight: highlight, bridge: selectionBridge)
             } else {
                 VStack(alignment: .leading, spacing: BasketTokens.spacing) {
                     Text(availability).foregroundStyle(style.color(BasketTokens.muted))
@@ -292,13 +388,8 @@ struct ArticleReader: View {
         .alert("Edit tags", isPresented: $editingTags) {
             TextField("Comma-separated tags", text: $tagText)
             Button("Save") {
-                let tags = tagText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-                guard tags.count <= 30, tags.allSatisfy({ $0.count <= 80 }) else {
-                    store.notify("Use up to 30 tags of at most 80 characters.", icon: "exclamationmark.circle")
-                    return
-                }
-                store.change(Mutation(articleID: article.id, tags: tags))
+                do { store.change(Mutation(articleID: article.id, tags: try LibraryTags.parse(tagText))) }
+                catch { store.report(error) }
             }
             Button("Cancel", role: .cancel) {}
         }
@@ -307,6 +398,20 @@ struct ArticleReader: View {
     private var linkedFeeds: [SubscriptionPreview.Candidate] {
         let subscriptions = Set(store.library.feeds.values.map(\.url))
         return discoveredFeeds.filter { !subscriptions.contains($0.url) }
+    }
+
+    private func saveSelectedHighlight() {
+        savingHighlight = true
+        Task {
+            defer { savingHighlight = false }
+            do {
+                guard let selection = try await selectionBridge.selectedText() else {
+                    store.notify("Select text to highlight.", icon: "highlighter")
+                    return
+                }
+                try await store.saveHighlight(article: article, mark: .highlight, quote: selection.quote, anchor: selection.anchor)
+            } catch { store.report(error) }
+        }
     }
 
     private func subscribeToLinkedFeed(_ candidate: SubscriptionPreview.Candidate) {
@@ -349,7 +454,7 @@ struct ArticleReader: View {
         case "pending": return "Preparing the reader view…"
         case "failed": return "Couldn’t prepare the reader view."
         case "quota": return "The backend storage limit has been reached."
-        case "pdf_unsupported": return "PDF support coming soon."
+        case "pdf_unsupported": return "Add the original link as a PDF to open it in the PDF reader."
         default: return "Reader content is unavailable."
         }
     }
@@ -364,6 +469,11 @@ struct ArticleReader: View {
                           tooltipAlignment: .bottomLeading, action: focus)
             Spacer(minLength: 2)
             Divider().frame(height: 16).padding(.horizontal, 3)
+
+            if article.location != "trash", store.html(for: article.id) != nil {
+                toolbarButton("Highlight selected text", icon: "highlighter", action: saveSelectedHighlight)
+                    .disabled(!store.canUseAPI || savingHighlight)
+            }
 
             toolbarButton(article.read ? "Mark as unread" : "Mark as read",
                           icon: article.read ? "envelope.badge" : "envelope.open") {

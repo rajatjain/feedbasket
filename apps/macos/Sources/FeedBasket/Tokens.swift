@@ -12,11 +12,26 @@ enum BasketTokens {
     static let radius: CGFloat = 6
     static let bodySize: CGFloat = 13
     static let labelSize: CGFloat = 12
-    static let accents: [String: (UInt32, UInt32)] = [
-        "green": (0x315b48, 0xb4d9c0),
-        "blue": (0x285ca3, 0xa8c8ff),
-        "violet": (0x663ea3, 0xd1b9fa),
-        "rose": (0x9e375a, 0xffb7ce),
-        "amber": (0x835211, 0xf5c688),
+    struct Palette: Identifiable {
+        let id: String
+        let label: String
+        let accent: (UInt32, UInt32)
+        let sidebar: (UInt32, UInt32)
+        let selection: (UInt32, UInt32)
+        let surface: (UInt32, UInt32)
+    }
+    static let defaultPalette = "blue"
+    static let palettes: [Palette] = [
+        .init(id: "blue", label: "Blue", accent: (0x285ca3, 0xa7c8ff), sidebar: (0xeaf1fa, 0x2b3749), selection: (0xd8e8fc, 0xbcd5f7), surface: (0xfffefa, 0x354457)),
+        .init(id: "ink", label: "Ink & Paper", accent: (0x3b3c40, 0xccc8c1), sidebar: (0xefede9, 0x2e3136), selection: (0xe3e0da, 0xd8d3cb), surface: (0xfcfbf7, 0x373a40)),
+        .init(id: "eucalyptus", label: "Eucalyptus", accent: (0x31594d, 0xaddac8), sidebar: (0xe4ebe7, 0x3d4843), selection: (0xd7e6de, 0xc5ded2), surface: (0xfafcfa, 0x4a524f)),
+        .init(id: "apricot", label: "Apricot", accent: (0x963f2b, 0xf4b99b), sidebar: (0xf9eee5, 0x45403c), selection: (0xf7ddc8, 0xf1c8b1), surface: (0xfffaf4, 0x534d48)),
+    ]
+    static let paletteAliases: [String: String] = [
+        "green": "eucalyptus",
+        "seaglass": "eucalyptus",
+        "violet": "blue",
+        "rose": "apricot",
+        "amber": "apricot",
     ]
 }

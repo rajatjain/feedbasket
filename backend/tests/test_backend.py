@@ -7,20 +7,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from alembic import command
+from alembic.config import Config as AlembicConfig
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
-from feedbasket import admin, auth, extraction, feeds, library, scheduler
+from feedbasket import admin, auth, backups, extraction, feeds, library, scheduler
 from feedbasket.config import Config
-from feedbasket.db import Article, ArticleTag, ArticleURL, Feed, FeedEntry, Job, LoginSession, get_setting, now, set_setting, write
+from feedbasket.db import Account, Article, ArticleTag, ArticleURL, Feed, FeedEntry, Job, LoginSession, get_setting, make_engine, now, set_setting, write
 from feedbasket.main import create_app
 
 DATA = Path(__file__).with_name("data")
 FEED_URL = "https://www.nasa.gov/feed/"
 ARTICLE_URL = "https://www.nasa.gov/missions/artemis/i-am-artemis-katie-spicer/"
-OWNER = {"sub": "fixture-owner", "email": "owner@gmail.com", "email_verified": True, "name": "Owner"}
 READER = {"sub": "fixture-reader", "email": "reader@gmail.com", "email_verified": True}
 ADMIN_USERNAME = "fixture-admin"
 ADMIN_PASSWORD = "test password ñ"
@@ -43,14 +44,14 @@ def bearer(token):
 @pytest.fixture
 def seeded_library(tmp_path):
     config = Config(db_path=tmp_path / "library.sqlite", backup_folder=str(tmp_path / "backups"),
-                    admin_email=OWNER["email"], admin_username=ADMIN_USERNAME, admin_password=ADMIN_PASSWORD)
+                    admin_username=ADMIN_USERNAME, admin_password=ADMIN_PASSWORD)
     app = create_app(config, start_worker=False)
     with TestClient(app, base_url=config.public_url):
         _, entries = read_page("nasa.xml", FEED_URL)
         canonical, title, body, extractor = extraction.extract(article_document())
         assert body and extractor
         with write(app.state.engine) as db:
-            owner = auth.sign_in(db, config, OWNER)
+            owner = auth.create_local_account(db, config, "owner")
             token = auth.issue_session(db, owner.id)
             feed = feeds.subscribe(db, owner.id, FEED_URL, "NASA")
             feed.initial_done = True
@@ -141,7 +142,7 @@ def test_account_access_and_admin_permissions(backend):
     assert client.cookies.get(admin.ADMIN_COOKIE) is None
     csrf = admin_login(client)
     assert client.post("/admin/backup/run", data={"token": "invalid"}).status_code == 403
-    assert client.get("/api/v1/me", headers=bearer(token)).json()["admin"] is True
+    assert client.get("/api/v1/me", headers=bearer(token)).json()["admin"] is False
     with write(app.state.engine) as db:
         with pytest.raises(HTTPException, match="not been allowed"):
             auth.sign_in(db, app.state.config, READER)
@@ -159,6 +160,34 @@ def test_account_access_and_admin_permissions(backend):
     assert "Admin sign-in" in client.post("/admin/logout", data={"token": csrf}).text
     assert client.cookies.get(admin.ADMIN_COOKIE) is None
     assert "Back Up Now" not in client.get("/admin", headers={"Cookie": f"{admin.ADMIN_COOKIE}={session}"}).text
+
+
+def test_migration_preserves_legacy_google_admin_as_reader(tmp_path):
+    config = Config(db_path=tmp_path / "legacy.sqlite")
+    engine = make_engine(config.db_path)
+    try:
+        migrations = AlembicConfig()
+        migrations.set_main_option("script_location", str(DATA.parents[1] / "migrations"))
+        with engine.begin() as connection:
+            migrations.attributes["connection"] = connection
+            command.upgrade(migrations, "0005")
+            connection.execute(text("""
+                INSERT INTO accounts (id, google_sub, email, name, picture, admin, quota)
+                VALUES ('legacy-id', 'legacy-google', 'legacy@gmail.com', 'Legacy', '', 1, 100)
+            """))
+    finally:
+        engine.dispose()
+
+    app = create_app(config, start_worker=False)
+    with TestClient(app, base_url=config.public_url) as client:
+        with write(app.state.engine) as db:
+            account = auth.sign_in(db, config, {"sub": "legacy-google", "email": "legacy@gmail.com", "email_verified": True})
+            assert account.id == "legacy-id"
+            token = auth.issue_session(db, account.id)
+            assert "admin" not in Account.__table__.columns
+            assert "admin" not in {row[1] for row in db.execute(text("PRAGMA table_info(accounts)"))}
+        assert client.get("/api/v1/me", headers=bearer(token)).json()["admin"] is False
+        assert client.post("/admin/backup/run", headers=bearer(token), data={"token": ""}).status_code == 403
 
 
 def test_save_dedup_archive_trash_and_sync(backend, caplog):
@@ -328,22 +357,30 @@ def test_quota_and_body_cleanup(backend):
         assert article.url == canonical
         library.store_body(db, article, body, extractor)
     assert client.get(f"/api/v1/articles/{ids['article']}").json()["content_status"] == "quota"
-    assert client.post("/api/v1/articles", json={"url": "https://example.com/file.pdf"}).status_code == 415
+    pdf = client.post("/api/v1/articles", json={"url": "https://example.com/file.pdf"})
+    assert pdf.status_code == 202 and pdf.json()["article"]["document_type"] == "pdf"
 
 
 def test_admin_backup_retention_and_restore(backend, tmp_path):
     app, client, token, ids = backend
     csrf = admin_login(client)
-    folder = Path(app.state.config.backup_folder)
-    response = client.post("/admin/backup/settings", data={
-        "token": csrf, "folder": str(folder), "retention": "1", "frequency": "weekly",
-    })
-    assert "Backup settings saved" in response.text
-    for _ in range(2):
+    folder = Path(app.state.config.backup_folder) / app.state.config.backup_prefix / "daily"
+    assert not scheduler.tick(app.state.engine, app.state.config)
+    with Session(app.state.engine) as db:
+        next_at = get_setting(db, backups.NEXT_AT, 0)
+    for _ in range(3):
         assert "Backup queued" in client.post("/admin/backup/run", data={"token": csrf}).text
         assert scheduler.tick(app.state.engine, app.state.config)
+    with Session(app.state.engine) as db:
+        assert get_setting(db, backups.NEXT_AT, 0) == next_at
     paths = list(folder.glob("*.sqlite"))
-    assert len(paths) == 1
+    assert len(paths) == 2
+    before_restore = client.get("/api/v1/sync", headers=bearer(token)).json()
+    with write(app.state.engine) as db:
+        _, created = library.save_article(db, ids["account"], "https://example.com/original", "", [])
+        assert created
+    cursor = client.get("/api/v1/sync", headers=bearer(token)).json()["cursor"]
+    assert cursor > before_restore["cursor"]
     with closing(sqlite3.connect(paths[0])) as snapshot:
         assert snapshot.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert snapshot.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -355,9 +392,20 @@ def test_admin_backup_retention_and_restore(backend, tmp_path):
     with TestClient(restored, base_url=app.state.config.public_url) as restored_client:
         assert restored_client.get("/api/v1/me", headers=bearer(token)).status_code == 401
         with write(restored.state.engine) as db:
-            owner = auth.sign_in(db, app.state.config, OWNER)
-            restored_token = auth.issue_session(db, owner.id)
+            restored_token = auth.issue_session(db, ids["account"])
         restored_client.headers.update(bearer(restored_token))
+        # The new change reuses a sequence number already seen on the original database.
+        replacement = restored_client.post("/api/v1/articles", json={"url": "https://example.com/replacement"})
+        assert replacement.status_code == 202
+        rebuilt = restored_client.get("/api/v1/sync").json()
+        assert rebuilt["cursor"] >= cursor
+        assert rebuilt["library_id"] != before_restore["library_id"]
+        page = restored_client.get("/api/v1/sync", params={
+            "after": cursor, "library_id": before_restore["library_id"],
+        }).json()
+        assert page == {"cursor": 0, "has_more": False, "items": [], "reset_required": True,
+                        "library_id": rebuilt["library_id"]}
+        assert any(change["id"] == replacement.json()["article"]["id"] for change in rebuilt["items"])
         item = restored_client.get(f"/api/v1/articles/{ids['article']}").json()
         assert "Blue Moon" in item["body_html"] and item["tags"] == ["space", "weekend"]
         assert restored_client.get("/api/v1/feeds").json()[0]["id"] == ids["feed"]
@@ -366,9 +414,10 @@ def test_admin_backup_retention_and_restore(backend, tmp_path):
 def test_due_backup_runs_without_manual_queue(backend):
     app, _, _, _ = backend
     with write(app.state.engine) as db:
-        set_setting(db, "backup_next_at", now() - 60)
+        set_setting(db, backups.NEXT_AT, now() - 60)
     assert scheduler.tick(app.state.engine, app.state.config)
-    assert list(Path(app.state.config.backup_folder).glob("*.sqlite"))
+    root = Path(app.state.config.backup_folder) / app.state.config.backup_prefix
+    assert list((root / "daily").glob("*.sqlite"))
     assert not scheduler.tick(app.state.engine, app.state.config)
 
 
@@ -446,7 +495,7 @@ def test_backup_failure_retries_and_recovers(backend, tmp_path):
     assert "Retry" in client.get("/admin").text
     assert blocked.read_text() == "Existing file"
     response = client.post("/admin/backup/settings", data={
-        "token": csrf, "folder": config.backup_folder, "frequency": "daily", "retention": "7",
+        "token": csrf, "folder": config.backup_folder, "frequency": "daily",
     })
     assert "Backup settings saved" in response.text
     assert "Retry queued" in client.post(f"/admin/jobs/{failed_id}/retry", data={"token": csrf}).text
@@ -454,6 +503,51 @@ def test_backup_failure_retries_and_recovers(backend, tmp_path):
     with Session(engine) as db:
         assert db.get(Job, failed_id).status == "retried"
         assert Path(get_setting(db, "backup_last_path", "")).is_file()
+
+
+@pytest.mark.parametrize("retry", [False, True])
+def test_expired_backup_staging_cleanup_preserves_pending_retries(backend, monkeypatch, retry):
+    app, client, _, ids = backend
+    engine, config = app.state.engine, app.state.config
+    csrf = admin_login(client)
+    sunday = int(datetime(2026, 11, 15, tzinfo=backups.TIMEZONE).timestamp())
+    monkeypatch.setattr(scheduler, "now", lambda: sunday)
+    root = Path(config.backup_folder) / config.backup_prefix
+    root.mkdir(parents=True)
+    blocked = root / "weekly"
+    blocked.touch()
+    with write(engine) as db:
+        db.get(Feed, ids["feed"]).next_check = sunday + 86400
+        set_setting(db, backups.NEXT_AT, sunday)
+    for attempt in range(1, 4):
+        assert scheduler.tick(engine, config)
+        with write(engine) as db:
+            job = db.scalar(select(Job).where(Job.kind == "backup"))
+            job.run_at = sunday
+            assert job.attempts == attempt
+            assert job.status == ("queued" if attempt < 3 else "failed")
+            job_id = job.id
+        scheduler.clean_expired(engine, config, sunday)
+        staged, = config.db_path.parent.glob(f".{config.db_path.name}.feedbasket-*.sqlite.pending")
+    data = staged.read_bytes()
+    unrelated = staged.with_name(f".other.sqlite.{next((root / 'daily').glob('*.sqlite')).name}.pending")
+    unrelated.write_bytes(b"Another database's staging file")
+    if retry:
+        assert "Retry queued" in client.post(f"/admin/jobs/{job_id}/retry", data={"token": csrf}).text
+        with write(engine) as db:
+            queued = db.scalar(select(Job).where(Job.kind == "backup", Job.status == "queued"))
+            queued.run_at = sunday
+    scheduler.clean_expired(engine, config, sunday + 30 * 86400 + 1)
+    with Session(engine) as db:
+        assert db.get(Job, job_id) is None
+    assert unrelated.is_file()
+    if retry:
+        assert staged.read_bytes() == data
+        blocked.unlink()
+        assert scheduler.tick(engine, config)
+        weekly, = blocked.glob("*.sqlite")
+        assert weekly.read_bytes() == data
+    assert not staged.exists()
 
 
 def test_worker_requeues_interrupted_job(backend):

@@ -3,11 +3,12 @@ import SwiftUI
 struct BasketSettings: View {
     @Environment(BasketStore.self) private var store
     @AppStorage("theme") private var theme = BasketTheme.system
-    @AppStorage("accent") private var accent = "green"
+    @AppStorage("accent") private var accent = BasketTokens.defaultPalette
     @AppStorage(AutoReadPreference.key) private var autoReadDelay = AutoReadPreference.defaultDelay
     @BasketState private var origin: String = ""
     @BasketState private var cutoff: Date = Calendar.current.startOfDay(for: .now)
     @BasketState private var quota: Double = 1.0
+    @BasketState private var pdfQuota: Double = 1.0
     @BasketState private var cleanup: Cleanup? = nil
 
     enum Cleanup: String, Identifiable {
@@ -36,8 +37,11 @@ struct BasketSettings: View {
 
             Form {
                 Picker("Theme", selection: $theme) { ForEach(BasketTheme.allCases) { Text($0.label).tag($0) } }
-                Picker("Accent", selection: $accent) {
-                    ForEach(["green", "blue", "violet", "rose", "amber"], id: \.self) { Text($0.capitalized) }
+                Picker("Palette", selection: Binding(
+                    get: { BasketStyle.palette(for: accent).id },
+                    set: { accent = $0 }
+                )) {
+                    ForEach(BasketTokens.palettes) { Text($0.label).tag($0.id) }
                 }
             }.formStyle(.grouped).tabItem { Label("Appearance", systemImage: "paintpalette") }
 
@@ -61,17 +65,11 @@ struct BasketSettings: View {
                     Button("Resume automatic downloads") { store.resumeDownloads() }
                         .buttonStyle(BasketButton()).disabled(store.profile == nil)
                 }
-                Section("Backend storage") {
+                Section("Article storage") {
                     if let storage = store.storage {
                         LabeledContent("Article bodies", value: ByteCountFormatter.string(fromByteCount: Int64(storage.used_bytes), countStyle: .file))
                         TextField("Account limit (GB)", value: $quota, format: .number)
-                        Button("Save limit") {
-                            guard quota.isFinite && (0...1000).contains(quota) else {
-                                store.notify("Enter a limit between 0 and 1,000 GB.", icon: "exclamationmark.circle", at: .settings)
-                                return
-                            }
-                            Task { await store.setQuota(Int(quota * 1_000_000_000)) }
-                        }.buttonStyle(BasketButton(primary: true))
+                        Button("Save article limit") { saveLimit(quota, pdf: false) }.buttonStyle(BasketButton(primary: true))
                         HStack {
                             Button("Remove by date…") { cleanup = .datedBackend }
                             Button("Remove all…") { cleanup = .allBackend }
@@ -80,6 +78,15 @@ struct BasketSettings: View {
                         Text("Connect and sign in to view your account’s storage.")
                     }
                 }.disabled(!store.canUseAPI)
+                if let storage = store.storage, let used = storage.pdf_used_bytes, let limit = storage.pdf_quota_bytes {
+                    Section("PDF storage · Cloudflare R2") {
+                        LabeledContent("Uploaded PDFs", value: ByteCountFormatter.string(fromByteCount: Int64(used), countStyle: .file))
+                        if limit > 0 { ProgressView(value: min(Double(used) / Double(limit), 1)) }
+                        Text("PDF links use no R2 storage.").foregroundStyle(.secondary)
+                        TextField("PDF limit (GB)", value: $pdfQuota, format: .number)
+                        Button("Save PDF limit") { saveLimit(pdfQuota, pdf: true) }.buttonStyle(BasketButton(primary: true))
+                    }.disabled(!store.canUseAPI)
+                }
             }.formStyle(.grouped).tabItem { Label("Storage", systemImage: "internaldrive") }
 
             DiagnosticsView().tabItem { Label("Diagnostics", systemImage: "list.bullet.rectangle") }
@@ -91,6 +98,7 @@ struct BasketSettings: View {
         .task(id: store.canUseAPI) {
             await store.loadStorage()
             if let storage = store.storage { quota = Double(storage.quota_bytes) / 1_000_000_000 }
+            if let bytes = store.storage?.pdf_quota_bytes { pdfQuota = Double(bytes) / 1_000_000_000 }
         }
         .alert(item: $cleanup) { item in
             Alert(title: Text(item.rawValue), message: Text("Your article list, tags, and read status are preserved."),
@@ -100,5 +108,13 @@ struct BasketSettings: View {
                 else { store.clearOffline(before: date) }
             }, secondaryButton: .cancel())
         }
+    }
+
+    private func saveLimit(_ gigabytes: Double, pdf: Bool) {
+        guard gigabytes.isFinite, (0...1000).contains(gigabytes) else {
+            store.notify("Enter a limit between 0 and 1,000 GB.", icon: "exclamationmark.circle", at: .settings)
+            return
+        }
+        Task { await store.setQuota(Int(gigabytes * 1_000_000_000), pdf: pdf) }
     }
 }

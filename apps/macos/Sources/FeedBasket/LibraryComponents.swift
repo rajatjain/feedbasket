@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ArticleBatchBar: View {
@@ -54,7 +55,12 @@ struct ArticleRow: View {
                     .font(.system(size: 14, weight: article.read ? .medium : .semibold))
                     .lineLimit(3)
                 HStack(spacing: 5) {
-                    Text(article.source).lineLimit(1).truncationMode(.middle)
+                    if article.isPDF {
+                        Label(article.pdf?.source == "upload" ? "Uploaded PDF" : "PDF link", systemImage: "doc.richtext")
+                            .lineLimit(1)
+                    } else {
+                        Text(article.source).lineLimit(1).truncationMode(.middle)
+                    }
                     Text("·").accessibilityHidden(true)
                     Text(article.date, format: .dateTime.month(.abbreviated).day().year())
                         .lineLimit(1).fixedSize()
@@ -62,6 +68,14 @@ struct ArticleRow: View {
                         Image(systemName: "star.fill").foregroundStyle(style.accent).accessibilityLabel("Starred")
                     }
                 }.font(.system(size: 11)).foregroundStyle(style.color(BasketTokens.muted))
+                if article.isPDF {
+                    if article.pdf?.deletion_pending == true {
+                        Text("Deleting…").font(.caption).foregroundStyle(.secondary)
+                    } else if let position = article.reading_position {
+                        let total = article.pdf?.page_count.map { " of \($0)" } ?? ""
+                        Text("Page \(position.page)\(total)").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 if archive {
                     let sources = [article.feed_ids.isEmpty ? nil : "Subscriptions", article.saved_at == nil ? nil : "Read Later"]
                     Text(sources.compactMap { $0 }.joined(separator: " · "))
@@ -73,13 +87,76 @@ struct ArticleRow: View {
     }
 }
 
+struct SidebarFeedRow: View {
+    @Environment(BasketStore.self) private var store
+    @Environment(\.basketStyle) private var style
+    @BasketState private var hovering = false
+    let feed: Feed
+    let selected: Bool
+    let hasUnread: Bool
+    let rename: () -> Void
+    let unsubscribe: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Label {
+                Text(feed.title)
+                    .fontWeight(hasUnread ? .semibold : .regular)
+                    .lineLimit(1)
+            } icon: {
+                Image(systemName: feed.isWebsite ? "globe" : "newspaper")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityValue(hasUnread ? "Unread articles" : "")
+
+            if hasUnread {
+                Circle()
+                    .fill(selected ? AnyShapeStyle(.primary) : AnyShapeStyle(style.accent))
+                    .frame(width: 7, height: 7)
+                    .accessibilityHidden(true)
+            }
+
+            Menu {
+                actions
+            } label: {
+                Label("Feed actions", systemImage: "ellipsis")
+                    .labelStyle(.iconOnly)
+                    .frame(width: 20, height: 16)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Feed actions")
+            .opacity(hovering ? 1 : 0)
+            .allowsHitTesting(hovering)
+            .accessibilityHidden(!hovering)
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .contextMenu { actions }
+    }
+
+    @ViewBuilder private var actions: some View {
+        Button("Rename", action: rename)
+            .disabled(!store.canUseAPI)
+        Button("Mark All as Read") { store.markFeedAsRead(feed) }
+            .disabled(!hasUnread)
+        Divider()
+        Button("Unsubscribe…", role: .destructive, action: unsubscribe)
+            .disabled(!store.canUseAPI)
+    }
+}
+
 struct FeedMenu: View {
     @Environment(BasketStore.self) private var store
     let feed: Feed
-    @BasketState private var confirming: Bool = false
+    let rename: () -> Void
+    let unsubscribe: () -> Void
 
     var body: some View {
         Menu {
+            Button("Rename", action: rename)
             Button("Refresh now") { Task { await store.feedAction(feed, path: "refresh") } }
             Menu("Refresh interval") {
                 ForEach([0, 15, 30, 60, 360, 1440], id: \.self) { value in
@@ -94,7 +171,7 @@ struct FeedMenu: View {
                 }
             }
             Divider()
-            Button("Unsubscribe…", role: .destructive) { confirming = true }
+            Button("Unsubscribe…", role: .destructive, action: unsubscribe)
         } label: {
             Label("Feed settings", systemImage: "ellipsis.circle")
                 .labelStyle(.iconOnly)
@@ -107,10 +184,119 @@ struct FeedMenu: View {
         .fixedSize()
         .help("Feed settings")
         .disabled(!store.canUseAPI)
-        .confirmationDialog("Unsubscribe from \(feed.title)?", isPresented: $confirming) {
-            Button("Unsubscribe and Delete", role: .destructive) { Task { await store.unsubscribe(feed) } }
-        } message: {
-            Text("Unstarred articles will be permanently deleted, including copies in Read Later, Archive, Trash, and other feeds. Starred articles will be kept.")
+    }
+}
+
+struct RenameFeedSheet: View {
+    @Environment(BasketStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    @BasketState private var name: String
+    @BasketState private var saving = false
+    @BasketState private var error: String?
+    let feed: Feed
+
+    init(feed: Feed) {
+        self.feed = feed
+        _name = BasketState(initialValue: feed.title)
+    }
+
+    private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var canSave: Bool {
+        !saving && store.canUseAPI && !trimmedName.isEmpty && trimmedName.unicodeScalars.count <= 500
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Rename").font(.headline)
+            FeedNameField(name: $name, enabled: !saving) {
+                if canSave { save(trimmedName) }
+            }
+            .frame(height: 24)
+            if let error {
+                Text(error).foregroundStyle(.red)
+            }
+            HStack {
+                Button("Use Publisher Name") { save(nil) }
+                    .disabled(saving || !store.canUseAPI || store.library.feeds[feed.id]?.custom_title == nil)
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(saving)
+                Button("Save") { save(trimmedName) }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canSave)
+            }
+        }
+        .padding(20)
+        .frame(width: 400)
+        .interactiveDismissDisabled(saving)
+    }
+
+    private func save(_ title: String?) {
+        guard !saving else { return }
+        saving = true
+        error = nil
+        Task {
+            defer { saving = false }
+            do {
+                try await store.renameFeed(feed, title: title)
+                dismiss()
+            } catch is CancellationError {
+                dismiss()
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+}
+
+private struct FeedNameField: NSViewRepresentable {
+    @Binding var name: String
+    let enabled: Bool
+    let submit: () -> Void
+
+    func makeNSView(context: Context) -> NameTextField {
+        let field = NameTextField(string: name)
+        field.placeholderString = "Feed name"
+        field.setAccessibilityLabel("Feed name")
+        field.delegate = context.coordinator
+        return field
+    }
+
+    func updateNSView(_ field: NameTextField, context: Context) {
+        context.coordinator.parent = self
+        field.isEnabled = enabled
+        if field.stringValue != name { field.stringValue = name }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class NameTextField: NSTextField {
+        private var selectedInitialName = false
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard window != nil, !selectedInitialName else { return }
+            selectedInitialName = true
+            DispatchQueue.main.async { [weak self] in self?.selectText(nil) }
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: FeedNameField
+
+        init(_ parent: FeedNameField) { self.parent = parent }
+
+        func controlTextDidChange(_ notification: Notification) {
+            if let field = notification.object as? NSTextField { parent.name = field.stringValue }
+        }
+
+        @MainActor
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
+            parent.name = textView.string
+            parent.submit()
+            return true
         }
     }
 }

@@ -10,7 +10,7 @@
 [hidden] { display: none !important; }
 body { width: 340px; margin: 0; padding: 12px 15px; }
 header, footer, .row { display: flex; align-items: center; gap: var(--spacing); }
-header { border-bottom: 1px solid var(--line); padding-bottom: 9px; color: var(--accent); }
+header { background: var(--sidebar); border-radius: var(--radius); padding: 7px 7px 9px; border-bottom: 1px solid var(--line); color: var(--accent); }
 .brand-icon { width: 24px; height: 24px; background: url("assets/brand-light.png") center / contain no-repeat; }
 :root[data-theme="dark"] .brand-icon { background-image: url("assets/brand-dark.png"); }
 @media (prefers-color-scheme: dark) {
@@ -50,7 +50,7 @@ button.primary { background: var(--accent); color: var(--onAccent); border-color
 .feed-icon { flex: none; width: 16px; height: 16px; background: url("assets/online-16.png") center / contain no-repeat; }
 .feed .muted { display: block; font-size: var(--labelSize); }
 #feed-hint { margin-top: 4px; color: var(--muted); font-size: var(--labelSize); }
-#feed-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+#feed-actions { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px; }
 #action-feedback:empty { position: absolute; }
 #action-feedback:not(:empty) { padding: 6px 8px; border-radius: var(--radius); background: var(--subtle); }
 #action-feedback[data-state="delivered"] { color: var(--accent); font-weight: 600; }
@@ -70,7 +70,9 @@ li button { margin-right: 4px; }
 .tag-list { max-height: 148px; padding: 2px; border: 1px solid var(--line); border-radius: var(--radius); }
 .tag-list li { padding: 0; }
 .tag-list button { display: grid; grid-template-columns: minmax(0, 1fr) auto 12px; align-items: center; gap: 7px; width: 100%; min-height: 27px; margin: 0; padding: 3px 6px; border: 0; background: transparent; text-align: left; overflow-wrap: anywhere; }
-.tag-list button:hover, .tag-list button[aria-pressed="true"] { background: var(--subtle); }
+.tag-list button:hover { background: var(--subtle); }
+.tag-list button[aria-pressed="true"] { background: var(--selection); color: #252924; }
+.tag-list button[aria-pressed="true"] :is(.tag-count, .tag-mark) { color: inherit; }
 .tag-list button:focus-visible { outline-offset: -2px; }
 .tag-list .create-tag { display: block; color: var(--accent); }
 .tag-count { font-variant-numeric: tabular-nums; }

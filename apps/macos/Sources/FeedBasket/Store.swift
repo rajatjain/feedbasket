@@ -220,9 +220,13 @@ final class BasketStore {
             if !reachable { Diagnostics.write("Backend reachable") }
             reachable = true
             guard try await syncProfile() else { return }
-            try await sendMutations()
             let cursor = library.cursor
-            let applied = try await downloadChanges()
+            var applied = try await downloadChanges()
+            if !library.pending.isEmpty || library.pendingPositions?.isEmpty == false {
+                try await sendMutations()
+                try await sendPDFPositions()
+                applied += try await downloadChanges()
+            }
             syncIssue = nil
             if cursor != library.cursor || applied > 0 {
                 Diagnostics.write("Library synced previous_cursor=\(cursor) cursor=\(library.cursor) changes=\(applied)")
@@ -455,7 +459,14 @@ final class BasketStore {
         var applied = 0
         while true {
             try Task.checkCancellation()
-            let page: SyncPage = try await api.call("/api/v1/sync?limit=200&after=\(library.cursor)")
+            var endpoint = "/api/v1/sync?limit=200&after=\(library.cursor)"
+            if let id = library.libraryID {
+                endpoint += "&library_id=\(id)"
+            } else if library.cursor > 0 {
+                // A cache from before library IDs existed needs one fresh sync.
+                endpoint += "&library_id="
+            }
+            let page: SyncPage = try await api.call(endpoint)
             try Task.checkCancellation()
             var next = library
             if page.reset_required {
@@ -463,7 +474,12 @@ final class BasketStore {
                 reset = true
                 next.articles = [:]
                 next.feeds = [:]
+                next.highlights = [:]
                 next.cursor = 0
+                next.libraryID = page.library_id
+                try disk?.clearCopies()
+                readerBodies = [:]
+                updateUsage()
                 try persist(next)
                 applied = 0
                 Diagnostics.write("Library cursor reset; rebuilding from backend")
@@ -489,12 +505,18 @@ final class BasketStore {
                         } else {
                             next.pending.removeAll { $0.articleID == item.id }
                         }
+                        next.pendingPositions?[item.id] = nil
                     }
                 case "feed": next.feeds[item.id] = item.operation == "delete" || item.feed?.active == false ? nil : item.feed
+                case "highlight":
+                    var highlights = next.highlights ?? [:]
+                    highlights[item.id] = item.operation == "delete" ? nil : item.highlight
+                    next.highlights = highlights
                 default: break
                 }
             }
             next.cursor = page.cursor
+            next.libraryID = page.library_id
             try persist(next)
             applied += page.items.count
             if !page.has_more { return applied }
@@ -509,9 +531,10 @@ final class BasketStore {
         guard html(for: id) == nil, canUseAPI,
               ["ready", "failed"].contains(article.content_status) else { return nil }
         let scope = updateScope
+        let libraryID = library.libraryID
         do {
             let detail: Article = try await api.call("/api/v1/articles/" + id)
-            guard !Task.isCancelled, scope == updateScope,
+            guard !Task.isCancelled, scope == updateScope, libraryID == library.libraryID,
                   library.articles[id]?.content_status == article.content_status else { return nil }
             if article.content_status == "ready" { readerBodies[id] = detail.body_html }
             return detail.content_error
@@ -535,7 +558,7 @@ final class BasketStore {
 
     private func warmOffline() async {
         guard let disk else { return }
-        let inbox = library.articles.values.filter { $0.location == "inbox" }
+        let inbox = library.articles.values.filter { $0.location == "inbox" && !$0.isPDF }
         var wanted = Set(inbox.filter { $0.saved_at != nil }.map(\.id))
         var byFeed: [String: [Article]] = [:]
         for article in inbox {
@@ -594,9 +617,131 @@ final class BasketStore {
         offlineBytes = copies.reduce(0) { $0 + $1.bytes }
     }
 
-    func previewSubscription(_ url: URL) async throws -> SubscriptionPreview {
-        let escaped = url.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? url.absoluteString
-        return try await api.call("/api/v1/feeds/discover?preview=true&check_subscriptions=true&url=" + escaped, timeout: 30)
+    func previewLink(_ url: URL) async throws -> LinkPreview {
+        try await api.call(API.endpoint("/api/v1/links/preview", [URLQueryItem(name: "url", value: url.absoluteString)]), timeout: 30)
+    }
+
+    func saveLink(_ url: String, title: String, tags: [String], pdf: Bool, feed: String?) async throws -> SavedLink {
+        let scope = updateScope
+        var body: [String: Any] = ["url": url, "title": String(title.prefix(500)), "tags": tags,
+                                   "document_type": pdf ? "pdf" : "article"]
+        body["subscribe_url"] = feed
+        let result: SavedLink = try await api.call("/api/v1/articles", method: "POST", body: body, timeout: 30)
+        try await acceptSavedDocument(result.article, feed: result.feed, scope: scope)
+        return result
+    }
+
+    func importPDF(_ file: URL, id: UUID, tags: [String]) async throws -> Article {
+        let scope = updateScope
+        let result = try await api.importPDF(file, id: id, tags: tags)
+        try await acceptSavedDocument(result, scope: scope)
+        await loadStorage()
+        guard scope == updateScope else { throw CancellationError() }
+        return result
+    }
+
+    private func acceptSavedDocument(_ article: Article, feed: Feed? = nil, scope: UUID) async throws {
+        guard scope == updateScope else { throw CancellationError() }
+        var next = library
+        next.articles[article.id] = article
+        if let feed { next.feeds[feed.id] = feed }
+        try persist(next)
+        await syncAfterDocumentChange(scope)
+        guard scope == updateScope else { throw CancellationError() }
+    }
+
+    private func syncAfterDocumentChange(_ scope: UUID) async {
+        guard scope == updateScope else { return }
+        await refresh(followUp: true)
+    }
+
+    func pdfURL(for article: Article) async throws -> URL {
+        if article.pdf?.source == "link", let url = article.original { return url }
+        struct Download: Decodable { let url: URL }
+        let download: Download = try await api.call("/api/v1/pdfs/\(article.id)/download")
+        return download.url
+    }
+
+    func readingPosition(for article: Article) -> ReadingPosition? {
+        let queued = library.pendingPositions?[article.id]
+        let saved = library.articles[article.id]?.reading_position ?? article.reading_position
+        if let queued, queued.updated_at > (saved?.updated_at ?? 0) { return queued }
+        return saved
+    }
+
+    func rememberPDFPosition(_ position: ReadingPosition, articleID: String, scope: UUID) {
+        guard scope == updateScope, let article = library.articles[articleID], article.pdf?.deletion_pending != true else { return }
+        if let previous = readingPosition(for: article) {
+            guard position.updated_at > previous.updated_at,
+                  previous.page != position.page || abs(previous.offset - position.offset) >= 0.01 else { return }
+        }
+        do {
+            var next = library
+            var positions = next.pendingPositions ?? [:]
+            positions[articleID] = position
+            next.pendingPositions = positions
+            try persist(next)
+            if canUseAPI { Task { await refresh(followUp: true) } }
+        } catch { report(error) }
+    }
+
+    private func sendPDFPositions() async throws {
+        for (id, position) in library.pendingPositions ?? [:] {
+            try Task.checkCancellation()
+            var saved: ReadingPosition?
+            do {
+                saved = try await api.call("/api/v1/pdfs/\(id)/position", method: "PUT", body: [
+                    "page": position.page, "offset": position.offset, "updated_at": position.updated_at,
+                    "document_revision": position.document_revision as Any? ?? NSNull(),
+                ])
+            } catch let error as APIError where [404, 409, 422].contains(error.status) {
+                Diagnostics.write("PDF position rejected (status \(error.status))", level: "WARNING")
+            }
+            try Task.checkCancellation()
+            var next = library
+            if let saved { next.articles[id]?.reading_position = saved }
+            if next.pendingPositions?[id] == position { next.pendingPositions?[id] = nil }
+            try persist(next)
+        }
+    }
+
+    func saveHighlight(article: Article, mark: Highlight.Mark, quote: String, anchor: Highlight.Anchor) async throws {
+        let scope = updateScope
+        let encoded = try JSONEncoder().encode(anchor)
+        let result: Highlight = try await api.call("/api/v1/articles/\(article.id)/highlights", method: "POST", body: [
+            "id": UUID().uuidString, "style": mark.rawValue, "quote": quote,
+            "color": "#ffe873", "anchor": try JSONSerialization.jsonObject(with: encoded),
+        ])
+        guard scope == updateScope else { throw CancellationError() }
+        var next = library
+        var highlights = next.highlights ?? [:]
+        highlights[result.id] = result
+        next.highlights = highlights
+        try persist(next)
+        await syncAfterDocumentChange(scope)
+    }
+
+    func removeHighlight(_ item: Highlight) async {
+        let scope = updateScope
+        do {
+            try await api.send("/api/v1/highlights/\(item.id)", method: "DELETE")
+            guard scope == updateScope else { return }
+            var next = library
+            next.highlights?[item.id] = nil
+            try persist(next)
+            await syncAfterDocumentChange(scope)
+        } catch { if scope == updateScope { report(error) } }
+    }
+
+    func permanentlyDeletePDF(_ article: Article) async {
+        let scope = updateScope
+        do {
+            let response = try await api.send("/api/v1/pdfs/\(article.id)/permanent", method: "DELETE")
+            await syncAfterDocumentChange(scope)
+            guard scope == updateScope else { return }
+            notify(response.isEmpty ? "PDF deleted." : "PDF deletion queued.", at: .articleList)
+            await loadStorage()
+        } catch { if scope == updateScope { report(error, at: .articleList) } }
     }
 
     func linkedFeeds(for articleID: String) async throws -> [SubscriptionPreview.Candidate] {
@@ -624,7 +769,7 @@ final class BasketStore {
             notify(job.message ?? (path == "older" ? "Older articles queued." : "Feed refresh queued."),
                    icon: job.job_id == nil ? "info.circle" : "clock")
             if let id = job.job_id {
-                for _ in 0..<15 {
+                for _ in 0..<35 {
                     try await Task.sleep(for: .seconds(2))
                     guard scope == updateScope else { return }
                     let status: Job = try await api.call("/api/v1/jobs/\(id)")
@@ -650,6 +795,24 @@ final class BasketStore {
         } catch { report(error) }
     }
 
+    func markFeedAsRead(_ feed: Feed) {
+        let ids = library.articles.values.compactMap { cached -> String? in
+            guard cached.feed_ids.contains(feed.id), let article = article(cached.id),
+                  article.location == "inbox", !article.read else { return nil }
+            return article.id
+        }
+        _ = changeArticles(ids, action: .read)
+    }
+
+    func renameFeed(_ feed: Feed, title: String?) async throws {
+        let scope = updateScope
+        _ = try await api.send("/api/v1/feeds/\(feed.id)", method: "PATCH",
+                               body: ["custom_title": title as Any? ?? NSNull()])
+        try Task.checkCancellation()
+        guard scope == updateScope else { throw CancellationError() }
+        await refresh(followUp: true)
+    }
+
     func unsubscribe(_ feed: Feed) async {
         do {
             _ = try await api.send("/api/v1/feeds/\(feed.id)", method: "DELETE")
@@ -659,15 +822,22 @@ final class BasketStore {
 
     func loadStorage() async {
         guard canUseAPI else { return }
-        do { storage = try await api.call("/api/v1/storage") }
-        catch { report(error, at: .settings, showToast: false) }
+        let scope = updateScope
+        do {
+            let result: Storage = try await api.call("/api/v1/storage")
+            if scope == updateScope { storage = result }
+        } catch { if scope == updateScope { report(error, at: .settings, showToast: false) } }
     }
 
-    func setQuota(_ bytes: Int) async {
+    func setQuota(_ bytes: Int, pdf: Bool = false) async {
+        let scope = updateScope
         do {
-            storage = try await api.call("/api/v1/storage", method: "PATCH", body: ["quota_bytes": bytes])
-            notify("Storage limit saved.", at: .settings)
-        } catch { report(error, at: .settings) }
+            let path = pdf ? "/api/v1/storage/pdfs" : "/api/v1/storage"
+            let result: Storage = try await api.call(path, method: "PATCH", body: ["quota_bytes": bytes])
+            guard scope == updateScope else { return }
+            storage = result
+            notify(pdf ? "PDF storage limit saved." : "Article storage limit saved.", at: .settings)
+        } catch { if scope == updateScope { report(error, at: .settings) } }
     }
 
     func clearBackendContent(before: Date?) async {
