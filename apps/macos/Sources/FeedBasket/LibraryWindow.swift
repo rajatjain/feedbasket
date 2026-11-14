@@ -623,7 +623,7 @@ struct LibraryWindow: View {
 
     private func articleList(_ articles: [Article], selectedArticles: [Article], mixed: Bool) -> some View {
         return VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: BasketTokens.spacing) {
+            LibraryPaneHeader(horizontalInset: BasketTokens.spacing * 1.4) {
                 HStack {
                     Text(currentFeed?.title ?? current.label)
                         .font(.headline)
@@ -644,8 +644,7 @@ struct LibraryWindow: View {
                         .init(title: "Read status", options: ["All", "Unread", "Read"], selection: $readFilter),
                     ]))
                 }
-            }.padding(BasketTokens.spacing * 1.4)
-            Divider()
+            }
             if selectedArticles.count > 1 {
                 ArticleBatchBar(articles: selectedArticles, clear: { selection = [] }) { action in
                     performBatch(action, on: selectedArticles)

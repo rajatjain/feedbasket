@@ -1,6 +1,21 @@
 import AppKit
 import SwiftUI
 
+struct LibraryPaneHeader<Content: View>: View {
+    let horizontalInset: CGFloat
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(spacing: 0) {
+            content()
+                .padding(.horizontal, horizontalInset)
+                .frame(height: 38)
+                .zIndex(1)
+            Divider()
+        }
+    }
+}
+
 extension View {
     func trackRestartRow(_ id: String, in position: RestartListPosition) -> some View {
         onGeometryChange(for: CGRect.self) { geometry in

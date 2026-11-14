@@ -72,6 +72,10 @@ struct ReaderPage: NSViewRepresentable {
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
         configuration.websiteDataStore = .nonPersistent()
         configuration.userContentController.add(context.coordinator, contentWorld: .defaultClient, name: "articleHighlight")
+        configuration.userContentController.add(context.coordinator, contentWorld: .defaultClient, name: ReaderCodeBlock.copyHandler)
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: ReaderCodeBlock.script, injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true, in: .defaultClient))
         configuration.userContentController.addUserScript(WKUserScript(
             source: ArticleSelection.actionScript, injectionTime: .atDocumentEnd,
             forMainFrameOnly: true, in: .defaultClient))
@@ -82,6 +86,7 @@ struct ReaderPage: NSViewRepresentable {
 
     static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
         view.configuration.userContentController.removeScriptMessageHandler(forName: "articleHighlight", contentWorld: .defaultClient)
+        view.configuration.userContentController.removeScriptMessageHandler(forName: ReaderCodeBlock.copyHandler, contentWorld: .defaultClient)
     }
 
     func updateNSView(_ view: WKWebView, context: Context) {
@@ -123,7 +128,7 @@ struct ReaderPage: NSViewRepresentable {
                                background: \(style.css(BasketTokens.surface)); color: \(style.css(style.accentPair)); }
         #selection-highlight:hover { background: \(style.css(BasketTokens.subtle)); }
         img { max-width: 100%; height: auto; }
-        pre { overflow: auto; text-align: left; }
+        \(ReaderCodeBlock.css(style: style))
         blockquote { margin-inline: 0; border-left: 2px solid \(style.css(BasketTokens.line)); padding-left: 16px; }
         #linked-feeds { margin-top: 24px; padding-top: 12px; border-top: 1px solid \(style.css(BasketTokens.line));
                         font: 13px/1.5 -apple-system, sans-serif; text-align: left; }
@@ -202,7 +207,15 @@ struct ReaderPage: NSViewRepresentable {
         }
 
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard loaded, canHighlight, message.frameInfo.isMainFrame,
+            guard loaded, message.frameInfo.isMainFrame else { return }
+            if message.name == ReaderCodeBlock.copyHandler {
+                guard let code = message.body as? String, !code.isEmpty else { return }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(code, forType: .string)
+                return
+            }
+
+            guard message.name == "articleHighlight", canHighlight,
                   let selection = message.body as? [String: String], let quote = selection["quote"],
                   !quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             saveHighlight?(quote, .init(kind: "article", prefix: selection["prefix"] ?? "", suffix: selection["suffix"] ?? ""))
@@ -445,14 +458,17 @@ struct ArticleReader: View {
     var body: some View {
         let preferences = preferences
         VStack(alignment: .leading, spacing: 0) {
-            actions
-                .padding(.horizontal, BasketTokens.spacing)
-                .padding(.vertical, 4)
+            LibraryPaneHeader(horizontalInset: BasketTokens.spacing) { actions }
                 .zIndex(1)
-            Divider()
-            articleHeading
-                .padding(.top, 24).padding(.bottom, 20)
-                .readerColumn(width: preferences.columnWidth)
+            VStack(alignment: .leading, spacing: 16) {
+                articleHeading
+                Rectangle()
+                    .fill(style.scheme == .dark ? style.color(BasketTokens.muted).opacity(0.28) : style.color(BasketTokens.line))
+                    .frame(height: 1)
+                    .accessibilityHidden(true)
+            }
+            .padding(.top, 24).padding(.bottom, 20)
+            .readerColumn(width: preferences.columnWidth)
             if let html = store.html(for: article.id) {
                 ReaderPage(articleID: article.id, body: html, style: style, preferences: preferences,
                            linkedFeeds: linkedFeeds, subscribe: subscribeToLinkedFeed,
