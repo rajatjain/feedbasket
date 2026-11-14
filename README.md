@@ -1,6 +1,6 @@
 # FeedBasket
 
-FeedBasket is an RSS reader and read-it-later app combined into one. It comes with a chrome extension to save articles directly; and a macos native app for reading.
+FeedBasket is a self-hosted RSS reader and read-it-later app for articles and PDFs. Save links from Chrome, then read and highlight in the native macOS app.
 
 ## Why Another Feed/Read-it-Later app?
 
@@ -12,11 +12,19 @@ FeedBasket is
 - Fully self-hosted.
 - You fully own the data.
 
-## Screenshot
+## Screenshots
 
 RSS reader on macOS with sample articles and feeds.
 
 ![FeedBasket in light mode with subscriptions, an article list, and a clean reading pane](docs/screenshots/mac-rss.webp)
+
+PDF reader on macOS with page thumbnails and Highlight and Underline beside selected text.
+
+![FeedBasket PDF reader with a compact toolbar, page thumbnails, and Highlight and Underline controls](docs/screenshots/mac-pdf-reader.webp)
+
+PDF Focus Mode with a search match outlined on the page and navigation in the floating bottom bar.
+
+![FeedBasket PDF Focus Mode with a search popover, a match count, and floating page and zoom controls](docs/screenshots/mac-pdf-focus.webp)
 
 ## 1. Start the backend
 
@@ -101,9 +109,13 @@ Use the account menu to sign in or create an account with a username. FeedBasket
 
 The app defaults to port `12000`. For the CLI backend, change it to port `8787` in **Settings → Connection**. **Settings → Storage** shows how much space offline articles use and lets you clear copies by date or all at once.
 
-Use **+ Add** at the bottom of the sidebar to paste a feed, article, or PDF link, or choose or drop a PDF file. When the sidebar is hidden, **+ Add** moves to the window toolbar. Saved PDFs appear under **Read Later → PDFs** and share tags with articles. Select text in the PDF reader to highlight or underline it. **Library → Highlights** opens the saved passage in its document. To delete an upload from R2, move the PDF to Trash and choose **Delete Permanently** there. Article and PDF quotas are managed separately in **Settings → Storage**.
+## Save and read PDFs
 
-To save a PDF from Chrome, open the FeedBasket popup on its tab and choose **Save PDF link**. The popup also lets you mark an undetected link as a PDF manually. Reload the unpacked extension from `chrome://extensions` after rebuilding it.
+- **Save from macOS.** Click **+ Add** to paste a PDF link, choose a file, or drag one into the window. FeedBasket stores the URL for a linked PDF and uploads local files to Cloudflare R2. Find both under **Read Later → PDFs**, with the same tags you use for articles. When the sidebar is hidden, **+ Add** moves to the window toolbar.
+- **Save from Chrome.** Open the FeedBasket popup on a PDF tab and choose **Save PDF link**. If detection is inconclusive, select **Save as a PDF link** manually.
+- **Navigate and search.** Click the current page number, enter a destination, and press Return. Press **⌘F** to see the match count and move between results. Focus Mode puts page and zoom controls in a floating bar at the bottom. FeedBasket saves your reading position so you can resume from it.
+- **Highlight or underline.** Select text and choose **Highlight** or **Underline** beside the selection. Open **Library → Highlights** to jump back to a saved passage.
+- **Manage storage.** View separate article and PDF quotas in **Settings → Storage**. A saved link uses no R2 storage. To remove an upload from R2, move it to Trash and choose **Delete Permanently**.
 
 ## PDF backend
 
