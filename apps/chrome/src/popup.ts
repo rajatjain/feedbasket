@@ -105,6 +105,7 @@ function selectedFeed(): FeedChoice | undefined {
 }
 
 function renderActions() {
+  button("reload-extension").disabled = submitting;
   const feed = selectedFeed();
   const pdf = savingPDF();
   const feedOnly = !pdf && detected === "feed";
@@ -303,6 +304,23 @@ chrome.storage.onChanged.addListener(changes => {
     void send<State>({ type: "state" }).then(update).catch(report);
   }
 });
+
+async function checkLocalBuild() {
+  const running = chrome.runtime.getManifest().version_name;
+  if (!running?.includes(" (local ")) return;
+  try {
+    const response = await fetch(chrome.runtime.getURL("manifest.json"), { cache: "no-store" });
+    if (!response.ok) return;
+    const { version_name: installed } = await response.json();
+    button("reload-extension").hidden = typeof installed !== "string" ||
+      !installed.includes(" (local ") || installed === running;
+  } catch { /* The extension can still save while a build is unavailable. */ }
+}
+
+button("reload-extension").onclick = () => { if (!submitting) chrome.runtime.reload(); };
+void checkLocalBuild();
+const buildCheck = window.setInterval(() => void checkLocalBuild(), 3000);
+window.addEventListener("pagehide", () => window.clearInterval(buildCheck), { once: true });
 
 void (async () => {
   update(await send<State>({ type: "state" }));

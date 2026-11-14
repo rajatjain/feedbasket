@@ -25,6 +25,7 @@ header { background: var(--sidebar); border-radius: var(--radius); padding: 7px 
   letter-spacing: -.65px;
 }
 header button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; font-size: 17px; }
+#reload-extension { color: var(--accent); border-color: var(--accent); }
 #settings { padding-top: 9px; }
 #sync { display: inline-flex; align-items: center; gap: 7px; }
 .connection-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }

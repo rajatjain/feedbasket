@@ -94,6 +94,8 @@ The default API URL is `http://127.0.0.1:12000`. If you used the CLI, set it to 
 
 Click **Add tags…** for recent tags, or type to search your tags or create a new one. When the page offers a feed, the popup shows **Save**, **Save + subscribe**, and **Subscribe**. Open a known RSS or Atom URL directly to subscribe to it.
 
+After you rebuild an unpacked extension with `npm run build`, open the popup and click the **Update ready** arrow beside Settings to reload it. If your installed copy predates this indicator, reload FeedBasket once from `chrome://extensions`.
+
 ## 3. Build and install the Mac app
 
 You need macOS 14+ and the macOS SDK with Swift 6+ from Xcode or Command Line Tools. From the repo root:
