@@ -195,6 +195,7 @@ struct ArticleReader: View {
     @Environment(BasketStore.self) private var store
     @Environment(\.basketStyle) private var style
     let article: Article
+    let isFocused: Bool
     let focus: () -> Void
     let perform: (ArticleAction) -> Void
     @AppStorage("readerFont") private var font = "Georgia"
@@ -223,7 +224,10 @@ struct ArticleReader: View {
     var body: some View {
         let preferences = preferences
         VStack(alignment: .leading, spacing: 0) {
-            actions.padding(.horizontal, BasketTokens.spacing).padding(.vertical, 4)
+            actions
+                .padding(.horizontal, BasketTokens.spacing)
+                .padding(.vertical, 4)
+                .zIndex(1)
             Divider()
             articleHeading
                 .padding(.top, 24).padding(.bottom, 20)
@@ -352,9 +356,12 @@ struct ArticleReader: View {
 
     private var actions: some View {
         HStack(spacing: 3) {
-            toolbarButton("Reading appearance", icon: "textformat") { options.toggle() }
+            toolbarButton("Reading appearance", icon: "textformat", tooltipAlignment: .bottomLeading) { options.toggle() }
                 .popover(isPresented: $options) { appearanceOptions }
-            toolbarButton("Toggle focus mode", icon: "viewfinder", action: focus)
+            toolbarButton(isFocused ? "Exit Focus Mode" : "Enter Focus Mode",
+                          icon: isFocused ? "arrow.down.right.and.arrow.up.left" : "viewfinder",
+                          active: isFocused, shortcut: isFocused ? "Esc" : nil,
+                          tooltipAlignment: .bottomLeading, action: focus)
             Spacer(minLength: 2)
             Divider().frame(height: 16).padding(.horizontal, 3)
 
@@ -367,26 +374,29 @@ struct ArticleReader: View {
             }
             if ArticleAction.star.allows(article) {
                 toolbarButton(ArticleAction.star.title(for: article), icon: article.isStarred ? "star.fill" : "star",
-                              active: article.isStarred) { perform(.star) }
+                              active: article.isStarred, shortcut: ArticleAction.star.shortcut) { perform(.star) }
             }
             if ArticleAction.archive.allows(article) {
-                toolbarButton("Archive", icon: "archivebox") { perform(.archive) }
+                toolbarButton("Archive", icon: "archivebox", shortcut: ArticleAction.archive.shortcut) { perform(.archive) }
             } else {
                 toolbarButton("Restore", icon: "arrow.uturn.backward") {
                     store.change(Mutation(articleID: article.id, action: "restore"))
                 }
             }
             if ArticleAction.dislike.allows(article) {
-                toolbarButton(ArticleAction.dislike.title(), icon: "hand.thumbsdown") { perform(.dislike) }
+                toolbarButton(ArticleAction.dislike.title(), icon: "hand.thumbsdown",
+                              shortcut: ArticleAction.dislike.shortcut) { perform(.dislike) }
             }
-            toolbarButton("Edit tags", icon: "tag") {
+            toolbarButton("Edit tags", icon: "tag", tooltipAlignment: article.original == nil ? .bottomTrailing : .bottom) {
                 tagText = article.tags.joined(separator: ", ")
                 editingTags = true
             }
 
             if let url = article.original {
                 Divider().frame(height: 16).padding(.horizontal, 3)
-                toolbarButton("Open original", icon: "arrow.up.right.square") { NSWorkspace.shared.open(url) }
+                toolbarButton("Open original", icon: "arrow.up.right.square", tooltipAlignment: .bottomTrailing) {
+                    NSWorkspace.shared.open(url)
+                }
                 Menu {
                     Button {
                         NSPasteboard.general.clearContents()
@@ -402,17 +412,17 @@ struct ArticleReader: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .help("Share article")
+                .modifier(ReaderTooltip(title: "Share article", shortcut: nil, alignment: .bottomTrailing))
             }
         }
         .buttonStyle(ReaderToolbarButtonStyle())
     }
 
-    private func toolbarButton(_ title: String, icon: String, active: Bool = false,
-                               action: @escaping () -> Void) -> some View {
+    private func toolbarButton(_ title: String, icon: String, active: Bool = false, shortcut: String? = nil,
+                               tooltipAlignment: Alignment = .bottom, action: @escaping () -> Void) -> some View {
         Button(action: action) { Label(title, systemImage: icon).labelStyle(.iconOnly) }
             .foregroundStyle(active ? style.accent : style.color(BasketTokens.text))
-            .help(title)
+            .modifier(ReaderTooltip(title: title, shortcut: shortcut, alignment: tooltipAlignment))
     }
 
     private var appearanceOptions: some View {
@@ -435,6 +445,55 @@ struct ArticleReader: View {
                 Text("Narrow").tag(48); Text("Standard").tag(62); Text("Wide").tag(78)
             }
         }.padding().frame(width: 275)
+    }
+}
+
+private struct ReaderTooltip: ViewModifier {
+    @Environment(\.basketStyle) private var style
+    @BasketState private var hovering = false
+    @BasketState private var visible = false
+
+    let title: String
+    let shortcut: String?
+    let alignment: Alignment
+
+    func body(content: Content) -> some View {
+        content
+            .accessibilityHint(shortcut.map { "Keyboard shortcut \($0)" } ?? "")
+            .onHover { inside in
+                hovering = inside
+                if !inside { visible = false }
+            }
+            .task(id: hovering) {
+                guard hovering else { return }
+                do { try await Task.sleep(for: .milliseconds(500)) }
+                catch { return }
+                if hovering && !Task.isCancelled { visible = true }
+            }
+            .overlay(alignment: alignment) {
+                if visible {
+                    HStack(spacing: 6) {
+                        Text(title)
+                        if let shortcut {
+                            Text(shortcut).foregroundStyle(style.color(BasketTokens.muted))
+                        }
+                    }
+                    .font(.system(size: BasketTokens.labelSize))
+                    .foregroundStyle(style.color(BasketTokens.text))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(style.color(BasketTokens.surface), in: .rect(cornerRadius: BasketTokens.radius))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: BasketTokens.radius).strokeBorder(style.color(BasketTokens.line))
+                    }
+                    .fixedSize()
+                    .visualEffect { tooltip, geometry in
+                        tooltip.offset(y: geometry.size.height + 9)
+                    }
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                }
+            }
     }
 }
 

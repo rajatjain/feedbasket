@@ -27,6 +27,7 @@ struct LibraryWindow: View {
     @BasketState private var selection: Set<String> = []
     @BasketState private var scrollTarget: String? = nil
     @BasketState private var columns: NavigationSplitViewVisibility = NavigationSplitViewVisibility.all
+    @BasketState private var readerFocused = false
     @BasketState private var showSubscriptions: Bool = true
     @BasketState private var showSaved: Bool = true
     @BasketState private var addingFeed: Bool = false
@@ -89,38 +90,45 @@ struct LibraryWindow: View {
         let displayed = articles.prefix(limit)
         let selectedArticles = displayed.filter { selection.contains($0.id) }
         let article = selectedArticles.count == 1 && selection.count == 1 ? selectedArticles.first : nil
-        NavigationSplitView(columnVisibility: $columns) {
-            sidebar.navigationSplitViewColumnWidth(min: 155, ideal: 182, max: 250)
-        } content: {
-            articleList(articles, selectedArticles: selectedArticles)
-                .navigationSplitViewColumnWidth(min: 230, ideal: 285, max: 380)
-        } detail: {
-            Group {
-                if let article {
-                    ArticleReader(article: article, focus: { columns = columns == .detailOnly ? .all : .detailOnly },
-                                  perform: { perform($0, on: article) })
-                        .id("\(store.updateScope)-\(article.id)")
-                } else if store.profile == nil {
-                    ContentUnavailableView {
-                        Label("Open your library", systemImage: "person.crop.circle")
-                    } actions: {
-                        Button("Sign in…") { showingSignIn = true }
-                            .buttonStyle(BasketButton(primary: true))
-                            .disabled(!store.reachable)
+        Group {
+            if readerFocused, let article {
+                reader(article)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .onExitCommand { readerFocused = false }
+                    .modifier(BasketToastOverlay(location: .reader))
+            } else {
+                NavigationSplitView(columnVisibility: $columns) {
+                    sidebar.navigationSplitViewColumnWidth(min: 155, ideal: 182, max: 250)
+                } content: {
+                    articleList(articles, selectedArticles: selectedArticles)
+                        .navigationSplitViewColumnWidth(min: 230, ideal: 285, max: 380)
+                } detail: {
+                    Group {
+                        if let article {
+                            reader(article)
+                        } else if store.profile == nil {
+                            ContentUnavailableView {
+                                Label("Open your library", systemImage: "person.crop.circle")
+                            } actions: {
+                                Button("Sign in…") { showingSignIn = true }
+                                    .buttonStyle(BasketButton(primary: true))
+                                    .disabled(!store.reachable)
+                            }
+                            .disabled(store.signingIn)
+                        } else if selectedArticles.count > 1 {
+                            BasketEmpty(title: "\(selectedArticles.count) articles selected", icon: "doc.on.doc")
+                        } else {
+                            BasketEmpty(title: "Select an article", icon: "doc.text")
+                        }
                     }
-                    .disabled(store.signingIn)
-                } else if selectedArticles.count > 1 {
-                    BasketEmpty(title: "\(selectedArticles.count) articles selected", icon: "doc.on.doc")
-                } else {
-                    BasketEmpty(title: "Select an article", icon: "doc.text")
+                    .modifier(BasketToastOverlay(location: .reader))
                 }
+                .navigationSplitViewStyle(.balanced)
             }
-            .modifier(BasketToastOverlay(location: .reader))
         }
         .focusedSceneValue(\.selectedArticleActions, article.map { article in
             SelectedArticleActions(article: article, perform: { perform($0, on: article) })
         })
-        .navigationSplitViewStyle(.balanced)
         .toolbarBackground(.hidden, for: .windowToolbar)
         .background {
             if store.canUndoArticleChange {
@@ -132,6 +140,7 @@ struct LibraryWindow: View {
             if selection.count > 1 || article.map({ !matchesReadFilter($0) }) == true { selection = [] }
         }
         .onChange(of: displayed.map(\.id)) { _, ids in selection.formIntersection(ids) }
+        .onChange(of: article == nil) { if article == nil { readerFocused = false } }
         .onChange(of: store.profile?.id) { shelf = .rss; selection = []; username = "" }
         .onChange(of: store.updateScope) { addingFeed = false; selection = []; scrollTarget = nil }
         .alert("Sign in", isPresented: $showingSignIn) {
@@ -150,6 +159,12 @@ struct LibraryWindow: View {
                 shelf = .feed(feed.id)
             }
         }
+    }
+
+    private func reader(_ article: Article) -> some View {
+        ArticleReader(article: article, isFocused: readerFocused, focus: { readerFocused.toggle() },
+                      perform: { perform($0, on: article) })
+            .id("\(store.updateScope)-\(article.id)")
     }
 
     private var feedsWithUnreadArticles: Set<String> {
