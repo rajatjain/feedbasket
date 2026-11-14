@@ -42,7 +42,8 @@ struct HighlightsShelf: View {
                     Spacer()
                     if mixed || !tags.isEmpty {
                         LibraryFilter(groups: (mixed ? [
-                            .init(title: "Type", options: ["All", "Articles", "PDFs"], selection: $documentType),
+                            .init(title: "Type", options: ["All", "Articles", "PDFs"],
+                                  selection: $documentType, firstOptionLabel: "All types"),
                         ] : []) + (tags.isEmpty ? [] : [
                             .init(title: "Tag", options: ["All tags"] + tags, selection: $tag),
                         ]))

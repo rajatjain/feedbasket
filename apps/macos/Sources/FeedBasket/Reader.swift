@@ -60,7 +60,8 @@ struct ReaderPage: NSViewRepresentable {
     let subscribe: (SubscriptionPreview.Candidate) -> Void
     let highlights: [Highlight]
     let targetHighlight: Highlight?
-    let bridge: ArticleSelection
+    let canHighlight: Bool
+    let saveHighlight: (String, Highlight.Anchor) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -68,10 +69,17 @@ struct ReaderPage: NSViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
         configuration.websiteDataStore = .nonPersistent()
+        configuration.userContentController.add(context.coordinator, contentWorld: .defaultClient, name: "articleHighlight")
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: ArticleSelection.actionScript, injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true, in: .defaultClient))
         let view = WKWebView(frame: .zero, configuration: configuration)
-        bridge.webView = view
         view.navigationDelegate = context.coordinator
         return view
+    }
+
+    static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "articleHighlight", contentWorld: .defaultClient)
     }
 
     func updateNSView(_ view: WKWebView, context: Context) {
@@ -80,6 +88,8 @@ struct ReaderPage: NSViewRepresentable {
         context.coordinator.subscribe = subscribe
         context.coordinator.highlights = highlights
         context.coordinator.target = targetHighlight
+        context.coordinator.canHighlight = canHighlight
+        context.coordinator.saveHighlight = saveHighlight
         let html = """
         <!doctype html><html><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -94,6 +104,12 @@ struct ReaderPage: NSViewRepresentable {
         article > :first-child { margin-block-start: 0; }
         a { color: \(style.css(style.accentPair)); }
         ::highlight(feedbasket) { background-color: #ffe873; color: #202020; }
+        #selection-highlight { position: fixed; z-index: 1; padding: 5px \(BasketTokens.spacing)px;
+                               border: 1px solid \(style.css(BasketTokens.line));
+                               border-radius: \(BasketTokens.radius)px; white-space: nowrap;
+                               font: 500 \(BasketTokens.bodySize)px -apple-system, sans-serif;
+                               background: \(style.css(BasketTokens.surface)); color: \(style.css(style.accentPair)); }
+        #selection-highlight:hover { background: \(style.css(BasketTokens.subtle)); }
         img { max-width: 100%; height: auto; }
         pre { overflow: auto; text-align: left; }
         blockquote { margin-inline: 0; border-left: 2px solid \(style.css(BasketTokens.line)); padding-left: 16px; }
@@ -117,7 +133,8 @@ struct ReaderPage: NSViewRepresentable {
                           background: \(style.css(style.readingSurface)); }
         #linked-feeds a:hover { text-decoration: underline; }
         </style></head><body><article>\(body)<details id="linked-feeds" hidden>
-        <summary></summary><ul></ul></details></article></body></html>
+        <summary></summary><ul></ul></details></article>
+        <button id="selection-highlight" type="button" hidden>Highlight</button></body></html>
         """
         if context.coordinator.html != html {
             context.coordinator.html = html
@@ -125,14 +142,16 @@ struct ReaderPage: NSViewRepresentable {
             context.coordinator.renderedIDs = nil
             context.coordinator.renderedHighlights = nil
             context.coordinator.renderedTarget = nil
-            view.loadHTMLString(html, baseURL: nil)
+            context.coordinator.highlightEnabled = nil
+            context.coordinator.pendingNavigation = view.loadHTMLString(html, baseURL: nil)
         } else {
+            context.coordinator.updateHighlightAvailability(in: view)
             context.coordinator.updateFooter(in: view)
             context.coordinator.updateHighlights(in: view)
         }
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var html = ""
         var loaded = false
         var renderedIDs: [String]?
@@ -142,11 +161,31 @@ struct ReaderPage: NSViewRepresentable {
         var target: Highlight?
         var renderedHighlights: [String]?
         var renderedTarget: String?
+        var canHighlight = false
+        var highlightEnabled: Bool?
+        var saveHighlight: ((String, Highlight.Anchor) -> Void)?
+        var pendingNavigation: WKNavigation?
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            guard navigation == pendingNavigation else { return }
             loaded = true
+            updateHighlightAvailability(in: webView)
             updateFooter(in: webView)
             updateHighlights(in: webView)
+        }
+
+        func updateHighlightAvailability(in webView: WKWebView) {
+            guard loaded, highlightEnabled != canHighlight else { return }
+            highlightEnabled = canHighlight
+            webView.callAsyncJavaScript("window.feedbasketHighlightEnabled?.(enabled);",
+                arguments: ["enabled": canHighlight], in: nil, in: .defaultClient, completionHandler: nil)
+        }
+
+        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard loaded, canHighlight, message.frameInfo.isMainFrame,
+                  let selection = message.body as? [String: String], let quote = selection["quote"],
+                  !quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            saveHighlight?(quote, .init(kind: "article", prefix: selection["prefix"] ?? "", suffix: selection["suffix"] ?? ""))
         }
 
         func updateHighlights(in webView: WKWebView) {
@@ -239,10 +278,7 @@ struct ReaderPage: NSViewRepresentable {
     }
 }
 
-@MainActor
-final class ArticleSelection {
-    weak var webView: WKWebView?
-
+private enum ArticleSelection {
     static let textIndex = """
         const article = document.querySelector('article');
         const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT, {
@@ -258,28 +294,66 @@ final class ArticleSelection {
         }
         """
 
-    func selectedText() async throws -> (quote: String, anchor: Highlight.Anchor)? {
-        guard let webView else { return nil }
-        let result = try await webView.callAsyncJavaScript(Self.textIndex + """
+    static let actionScript = """
+        (() => {
+        const articleBody = document.querySelector('article');
+        const button = document.getElementById('selection-highlight');
+        if (!articleBody || !button) return;
+        let enabled = false;
+        let selectedRange;
+        function update() {
             const selection = window.getSelection();
-            if (!selection?.rangeCount || selection.isCollapsed) return null;
-            const range = selection.getRangeAt(0);
-            if (!article.contains(range.startContainer) || !article.contains(range.endContainer)) return null;
+            selectedRange = undefined;
+            if (enabled && selection?.rangeCount && !selection.isCollapsed && selection.toString().trim()) {
+                const range = selection.getRangeAt(0);
+                const footer = document.getElementById('linked-feeds');
+                if (articleBody.contains(range.startContainer) && articleBody.contains(range.endContainer)
+                    && !footer.contains(range.startContainer) && !footer.contains(range.endContainer)) {
+                    selectedRange = range.cloneRange();
+                }
+            }
+            position();
+        }
+        function position() {
+            const lines = selectedRange ? Array.from(selectedRange.getClientRects()).filter(rect => rect.width > 0) : [];
+            const first = lines[0], last = lines.at(-1);
+            button.hidden = !first || last.bottom <= 0 || first.top >= window.innerHeight;
+            if (button.hidden) return;
+            const inset = 6;
+            const above = first.top - button.offsetHeight - inset;
+            const fitsAbove = above >= inset;
+            const anchor = fitsAbove ? first : last;
+            const left = anchor.left + (anchor.width - button.offsetWidth) / 2;
+            button.style.left = `${Math.max(inset, Math.min(left, window.innerWidth - button.offsetWidth - inset))}px`;
+            const below = last.bottom + inset;
+            button.style.top = `${fitsAbove ? above : Math.min(below, window.innerHeight - button.offsetHeight - inset)}px`;
+        }
+        window.feedbasketHighlightEnabled = value => { enabled = value; update(); };
+        document.addEventListener('selectionchange', update);
+        window.addEventListener('scroll', position, true);
+        window.addEventListener('resize', position);
+        window.addEventListener('load', position);
+        new ResizeObserver(position).observe(articleBody);
+        button.addEventListener('mousedown', event => event.preventDefault());
+        button.addEventListener('click', () => {
+            const range = selectedRange;
+            if (!enabled || !range || !articleBody.contains(range.commonAncestorContainer)) return;
+            \(textIndex)
             const selected = nodes.filter(entry => range.intersectsNode(entry.node));
-            if (!selected.length) return null;
+            if (!selected.length) return;
             const first = selected[0], last = selected[selected.length - 1];
             const start = first.start + (range.startContainer === first.node ? range.startOffset : 0);
             const end = last.start + (range.endContainer === last.node ? range.endOffset : last.node.length);
-            return { quote: text.slice(start, end), prefix: Array.from(text.slice(0, start)).slice(-128).join(''),
-                suffix: Array.from(text.slice(end)).slice(0, 128).join('') };
-            """, arguments: [:], in: nil, contentWorld: .defaultClient)
-        guard let result = result as? [String: String], let quote = result["quote"],
-              !quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        guard quote.unicodeScalars.count <= 8000 else {
-            throw APIError(status: 0, detail: "Select a shorter passage to highlight.")
-        }
-        return (quote, .init(kind: "article", prefix: result["prefix"] ?? "", suffix: result["suffix"] ?? ""))
-    }
+            const quote = text.slice(start, end);
+            window.webkit.messageHandlers.articleHighlight.postMessage({
+                quote, prefix: Array.from(text.slice(0, start)).slice(-128).join(''),
+                suffix: Array.from(text.slice(end)).slice(0, 128).join('')
+            });
+            window.getSelection().removeAllRanges();
+            update();
+        });
+        })();
+        """
 }
 
 struct ArticleReader: View {
@@ -304,7 +378,6 @@ struct ArticleReader: View {
     @BasketState private var discoveredFeeds: [SubscriptionPreview.Candidate] = []
     @BasketState private var subscribing: Set<String> = []
     @BasketState private var manuallyChangedReadStatus = false
-    @BasketState private var selectionBridge = ArticleSelection()
     @BasketState private var savingHighlight = false
 
     private var alignment: ReaderAlignment {
@@ -330,7 +403,9 @@ struct ArticleReader: View {
                 ReaderPage(body: html, style: style, preferences: preferences,
                            linkedFeeds: linkedFeeds, subscribe: subscribeToLinkedFeed,
                            highlights: (store.library.highlights ?? [:]).values.filter { $0.article_id == article.id }.sorted { $0.id < $1.id },
-                           targetHighlight: highlight, bridge: selectionBridge)
+                           targetHighlight: highlight,
+                           canHighlight: store.canUseAPI && article.location != "trash" && !savingHighlight,
+                           saveHighlight: saveSelectedHighlight)
             } else {
                 VStack(alignment: .leading, spacing: BasketTokens.spacing) {
                     Text(availability).foregroundStyle(style.color(BasketTokens.muted))
@@ -400,16 +475,17 @@ struct ArticleReader: View {
         return discoveredFeeds.filter { !subscriptions.contains($0.url) }
     }
 
-    private func saveSelectedHighlight() {
+    private func saveSelectedHighlight(_ quote: String, _ anchor: Highlight.Anchor) {
+        guard !savingHighlight, store.canUseAPI, article.location != "trash" else { return }
+        guard quote.unicodeScalars.count <= 8000 else {
+            store.report(APIError(status: 0, detail: "Select a shorter passage to highlight."))
+            return
+        }
         savingHighlight = true
         Task {
             defer { savingHighlight = false }
             do {
-                guard let selection = try await selectionBridge.selectedText() else {
-                    store.notify("Select text to highlight.", icon: "highlighter")
-                    return
-                }
-                try await store.saveHighlight(article: article, mark: .highlight, quote: selection.quote, anchor: selection.anchor)
+                try await store.saveHighlight(article: article, mark: .highlight, quote: quote, anchor: anchor)
             } catch { store.report(error) }
         }
     }
@@ -469,11 +545,6 @@ struct ArticleReader: View {
                           tooltipAlignment: .bottomLeading, action: focus)
             Spacer(minLength: 2)
             Divider().frame(height: 16).padding(.horizontal, 3)
-
-            if article.location != "trash", store.html(for: article.id) != nil {
-                toolbarButton("Highlight selected text", icon: "highlighter", action: saveSelectedHighlight)
-                    .disabled(!store.canUseAPI || savingHighlight)
-            }
 
             toolbarButton(article.read ? "Mark as unread" : "Mark as read",
                           icon: article.read ? "envelope.badge" : "envelope.open") {

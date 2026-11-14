@@ -96,7 +96,7 @@ private struct BasketSurface<Content: View>: View {
             .environment(\.basketStyle, style)
             .onChange(of: scheme, initial: true) { _, scheme in
                 NSApplication.shared.applicationIconImage = scheme == .dark
-                    ? FeedBasketArtwork.darkDockIcon : nil
+                    ? FeedBasketArtwork.darkDockIcon : FeedBasketArtwork.lightDockIcon
             }
     }
 }
@@ -178,10 +178,11 @@ struct BasketStatus: View {
 private enum FeedBasketArtwork {
     static let lightIcon = loadIcon("feedbasket-light")
     static let darkIcon = loadIcon("feedbasket-dark")
+    static let lightDockIcon = loadIcon("FeedBasket", extension: "icns")
     static let darkDockIcon = loadIcon("feedbasket-dock-dark")
 
-    private static func loadIcon(_ name: String) -> NSImage? {
-        Bundle.main.url(forResource: name, withExtension: "png")
+    private static func loadIcon(_ name: String, extension fileExtension: String = "png") -> NSImage? {
+        Bundle.main.url(forResource: name, withExtension: fileExtension)
             .flatMap { NSImage(contentsOf: $0) }
     }
 }

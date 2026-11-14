@@ -497,13 +497,14 @@ struct LibraryWindow: View {
                                  unsubscribe: { unsubscribingFeed = feed })
                             .id(feed.id)
                     }
-                    LibraryFilter(groups: (hasSourceFilter ? [
+                    LibraryFilter(groups: (mixed ? [
+                        .init(title: "Type", options: ["All", "Articles", "PDFs"],
+                              selection: $documentType, firstOptionLabel: "All types"),
+                    ] : []) + (hasSourceFilter ? [
                         .init(title: "Source", options: ["All", "Subscriptions", "Read Later"], selection: $source),
                     ] : [
                         .init(title: "Read status", options: ["All", "Unread", "Read"], selection: $readFilter),
-                    ]) + (mixed ? [
-                        .init(title: "Type", options: ["All", "Articles", "PDFs"], selection: $documentType),
-                    ] : []))
+                    ]))
                 }
             }.padding(BasketTokens.spacing * 1.4)
             Divider()

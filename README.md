@@ -82,7 +82,7 @@ npm run build
 2. Click **Load unpacked** and select `apps/chrome/dist`.
 3. Open FeedBasket from the toolbar and sign in with your username.
 
-The default API URL is `http://127.0.0.1:12000`. If you used the CLI, set it to `http://127.0.0.1:8787` in the popup settings. Purple means the backend is reachable. Gray means it is offline. The badge shows queued saves.
+The default API URL is `http://127.0.0.1:12000`. If you used the CLI, set it to `http://127.0.0.1:8787` in the popup settings. The toolbar basket is bright blue when the backend is reachable and muted blue when it is offline. The badge shows queued saves.
 
 ## 3. Build and install the Mac app
 
