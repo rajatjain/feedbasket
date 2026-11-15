@@ -61,6 +61,9 @@ struct LibraryWindow: View {
     @BasketState private var restoringReadStatus: String?
     @BasketState private var restoredLibrary = false
     @BasketState private var focusedListTopID: String?
+    @BasketState private var openedImage: ArticleImage?
+    @BasketState private var imageUsesWindow = false
+    @BasketState private var restoreImageFocus: (() -> Void)?
 
     @BasketState private var showingSignIn = false
     @BasketState private var username = ""
@@ -135,7 +138,7 @@ struct LibraryWindow: View {
         let highlight = current == .highlights ? highlightSelection.flatMap { store.library.highlights?[$0] } : nil
         let article = current == .highlights ? highlight.flatMap { store.article($0.article_id) }
             : selectedArticles.count == 1 && selection.count == 1 ? selectedArticles.first : nil
-        Group {
+        ZStack {
             if readerFocused, let article {
                 reader(article, highlight: highlight)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -181,8 +184,22 @@ struct LibraryWindow: View {
                 .navigationSplitViewStyle(.balanced)
             }
         }
+        .allowsHitTesting(openedImage == nil)
+        .accessibilityHidden(openedImage != nil)
+        .overlayPreferenceValue(ArticleImageReaderBounds.self) { anchor in
+            if let openedImage {
+                GeometryReader { geometry in
+                    let window = CGRect(origin: .zero, size: geometry.size)
+                    let bounds = imageUsesWindow ? window : anchor.map { geometry[$0] } ?? window
+                    ArticleImageViewer(image: openedImage, expanded: imageUsesWindow, canExpand: !readerFocused,
+                                       resize: { imageUsesWindow.toggle() }, close: closeArticleImage)
+                        .frame(width: bounds.width, height: bounds.height)
+                        .position(x: bounds.midX, y: bounds.midY)
+                }
+            }
+        }
         .focusedSceneValue(\.selectedArticleActions, article.map { article in
-            SelectedArticleActions(article: article, perform: { perform($0, on: article) })
+            SelectedArticleActions(article: article, perform: { if openedImage == nil { perform($0, on: article) } })
         })
         .toolbar {
             if readerFocused || columns == .doubleColumn || columns == .detailOnly {
@@ -196,7 +213,7 @@ struct LibraryWindow: View {
         }
         .toolbarBackground(.hidden, for: .windowToolbar)
         .dropDestination(for: URL.self) { urls, _ in
-            guard addRequest == nil, let file = urls.first, file.isFileURL else { return false }
+            guard openedImage == nil, addRequest == nil, let file = urls.first, file.isFileURL else { return false }
             addRequest = AddRequest(file: file)
             return true
         }
@@ -234,6 +251,10 @@ struct LibraryWindow: View {
         }
         .onChange(of: displayed.map(\.id)) { _, ids in selection.formIntersection(ids) }
         .onChange(of: article == nil) { if article == nil { readerFocused = false } }
+        .onChange(of: article?.id) {
+            openedImage = nil
+            restoreImageFocus = nil
+        }
         .onChange(of: store.profile?.id) { shelf = .rss; selection = []; username = "" }
         .onChange(of: store.updateScope) {
             clearRestartTargets()
@@ -421,11 +442,28 @@ struct LibraryWindow: View {
                           delete: { deletingPDF = article }, restartReader: restartReader)
             } else {
                 ArticleReader(article: article, highlight: highlight, isFocused: readerFocused, focus: toggleReaderFocus,
-                              perform: { perform($0, on: article) }, restartReader: restartReader)
-                    .onExitCommand { if readerFocused { toggleReaderFocus() } }
+                              perform: { perform($0, on: article) }, showImage: openArticleImage,
+                              restartReader: restartReader)
+                    .onExitCommand { if readerFocused && openedImage == nil { toggleReaderFocus() } }
             }
         }
         .id("\(store.updateScope)-\(article.id)")
+    }
+
+    private func openArticleImage(_ image: ArticleImage, restoreFocus: @escaping () -> Void) {
+        imageUsesWindow = false
+        restoreImageFocus = restoreFocus
+        openedImage = image
+    }
+
+    private func closeArticleImage() {
+        openedImage = nil
+        let restore = restoreImageFocus
+        restoreImageFocus = nil
+        Task { @MainActor in
+            await Task.yield()
+            if openedImage == nil { restore?() }
+        }
     }
 
     private func toggleReaderFocus() {

@@ -63,6 +63,7 @@ struct ReaderPage: NSViewRepresentable {
     let targetHighlight: Highlight?
     let canHighlight: Bool
     let saveHighlight: (String, Highlight.Anchor) -> Void
+    let showImage: (ArticleImage, @escaping () -> Void) -> Void
     let restartReader: RestartReaderState
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -73,6 +74,10 @@ struct ReaderPage: NSViewRepresentable {
         configuration.websiteDataStore = .nonPersistent()
         configuration.userContentController.add(context.coordinator, contentWorld: .defaultClient, name: "articleHighlight")
         configuration.userContentController.add(context.coordinator, contentWorld: .defaultClient, name: ReaderCodeBlock.copyHandler)
+        configuration.userContentController.add(context.coordinator, contentWorld: .defaultClient, name: ArticleImage.handler)
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: ArticleImage.script, injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true, in: .defaultClient))
         configuration.userContentController.addUserScript(WKUserScript(
             source: ReaderCodeBlock.script, injectionTime: .atDocumentEnd,
             forMainFrameOnly: true, in: .defaultClient))
@@ -87,6 +92,7 @@ struct ReaderPage: NSViewRepresentable {
     static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
         view.configuration.userContentController.removeScriptMessageHandler(forName: "articleHighlight", contentWorld: .defaultClient)
         view.configuration.userContentController.removeScriptMessageHandler(forName: ReaderCodeBlock.copyHandler, contentWorld: .defaultClient)
+        view.configuration.userContentController.removeScriptMessageHandler(forName: ArticleImage.handler, contentWorld: .defaultClient)
     }
 
     func updateNSView(_ view: WKWebView, context: Context) {
@@ -105,6 +111,7 @@ struct ReaderPage: NSViewRepresentable {
         context.coordinator.target = targetHighlight
         context.coordinator.canHighlight = canHighlight
         context.coordinator.saveHighlight = saveHighlight
+        context.coordinator.showImage = showImage
         let html = """
         <!doctype html><html><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -128,6 +135,7 @@ struct ReaderPage: NSViewRepresentable {
                                background: \(style.css(BasketTokens.surface)); color: \(style.css(style.accentPair)); }
         #selection-highlight:hover { background: \(style.css(BasketTokens.subtle)); }
         img { max-width: 100%; height: auto; }
+        img[src] { cursor: zoom-in; }
         \(ReaderCodeBlock.css(style: style))
         blockquote { margin-inline: 0; border-left: 2px solid \(style.css(BasketTokens.line)); padding-left: 16px; }
         #linked-feeds { margin-top: 24px; padding-top: 12px; border-top: 1px solid \(style.css(BasketTokens.line));
@@ -183,6 +191,7 @@ struct ReaderPage: NSViewRepresentable {
         var canHighlight = false
         var highlightEnabled: Bool?
         var saveHighlight: ((String, Highlight.Anchor) -> Void)?
+        var showImage: ((ArticleImage, @escaping () -> Void) -> Void)?
         var pendingNavigation: WKNavigation?
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -207,7 +216,15 @@ struct ReaderPage: NSViewRepresentable {
         }
 
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard loaded, message.frameInfo.isMainFrame else { return }
+            guard message.frameInfo.isMainFrame else { return }
+            if message.name == ArticleImage.handler {
+                guard let fields = message.body as? [String: String], let image = ArticleImage(fields) else { return }
+                showImage?(image, { [weak view = message.webView] in
+                    if let view { view.window?.makeFirstResponder(view) }
+                })
+                return
+            }
+            guard loaded else { return }
             if message.name == ReaderCodeBlock.copyHandler {
                 guard let code = message.body as? String, !code.isEmpty else { return }
                 NSPasteboard.general.clearContents()
@@ -430,6 +447,7 @@ struct ArticleReader: View {
     let isFocused: Bool
     let focus: () -> Void
     let perform: (ArticleAction) -> Void
+    let showImage: (ArticleImage, @escaping () -> Void) -> Void
     let restartReader: RestartReaderState
     @AppStorage("readerFont") private var font = "Georgia"
     @AppStorage("readerSize") private var size = 17.0
@@ -475,7 +493,7 @@ struct ArticleReader: View {
                            highlights: (store.library.highlights ?? [:]).values.filter { $0.article_id == article.id }.sorted { $0.id < $1.id },
                            targetHighlight: highlight,
                            canHighlight: store.canUseAPI && article.location != "trash" && !savingHighlight,
-                           saveHighlight: saveSelectedHighlight, restartReader: restartReader)
+                           saveHighlight: saveSelectedHighlight, showImage: showImage, restartReader: restartReader)
             } else {
                 VStack(alignment: .leading, spacing: BasketTokens.spacing) {
                     Text(availability).foregroundStyle(style.color(BasketTokens.muted))
@@ -503,6 +521,7 @@ struct ArticleReader: View {
                 }.readerColumn(width: preferences.columnWidth)
             }
         }
+        .anchorPreference(key: ArticleImageReaderBounds.self, value: .bounds) { $0 }
         .task(id: autoReadDelay) { [scope = store.updateScope] in
             guard !article.read, !manuallyChangedReadStatus else { return }
             let delays = AutoReadPreference.delays
