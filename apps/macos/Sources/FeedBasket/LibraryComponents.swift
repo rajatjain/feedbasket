@@ -144,7 +144,7 @@ struct ArticleRow: View {
                         Label(action.title(for: article), systemImage: action.icon(for: article))
                             .labelStyle(.iconOnly)
                     }
-                    .buttonStyle(ArticleRowButtonStyle(width: actionSize, selected: selected, destructive: action == .dislike))
+                    .buttonStyle(ArticleRowButtonStyle(width: actionSize, selected: selected))
                     .help(action.title(for: article))
                     .disabled(!action.allows(article))
                 }
@@ -158,20 +158,20 @@ struct ArticleRow: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .swipeActions(edge: .leading, allowsFullSwipe: false) {
-            swipeButton(.readStatus, tint: style.accent)
+            swipeButton(.readStatus)
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            swipeButton(.archive, tint: style.accent)
-            swipeButton(.dislike, tint: .red)
+            swipeButton(.archive)
+            swipeButton(.star)
         }
     }
 
-    @ViewBuilder private func swipeButton(_ action: ArticleRowAction, tint: Color) -> some View {
+    @ViewBuilder private func swipeButton(_ action: ArticleRowAction) -> some View {
         if action.allows(article) {
             Button { perform(action) } label: {
                 Label(action.title(for: article), systemImage: action.icon(for: article))
             }
-            .tint(tint)
+            .tint(style.accent)
         }
     }
 }
@@ -182,14 +182,12 @@ private struct ArticleRowButtonStyle: ButtonStyle {
     @BasketState private var hovering = false
     let width: CGFloat
     let selected: Bool
-    let destructive: Bool
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 13, weight: .medium))
             .frame(width: width, height: 20)
-            .foregroundStyle(hovering && destructive && enabled ? (selected ? Color(red: 0.55, green: 0.17, blue: 0.15) : .red)
-                             : selected ? style.selectionText : style.color(BasketTokens.text))
+            .foregroundStyle(selected ? style.selectionText : style.color(BasketTokens.text))
             .background((hovering || configuration.isPressed) && enabled
                         ? (selected ? style.selectionText.opacity(0.09) : style.color(BasketTokens.subtle)) : .clear,
                         in: .rect(cornerRadius: BasketTokens.radius))

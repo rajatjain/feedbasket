@@ -208,6 +208,34 @@ def test_refresh_and_backfill_follow_feed_pagination(library_backend, publisher)
     }
 
 
+def test_feed_refresh_does_not_reimport_expired_trash(library_backend, publisher):
+    client, engine, config = library_backend
+    publisher.publish_feed("/feed", "nasa.xml", next_page="/older", age_days=list(range(10)))
+    publisher.publish_feed("/older", "nasa-2.xml", age_days=list(range(10, 20)), duplicate_from="/feed")
+    subscription = client.post("/api/v1/feeds", json={"url": publisher.origin + "/feed"})
+    assert subscription.status_code == 202
+    feed_id = subscription.json()["id"]
+    feed_path = f"/api/v1/feeds/{feed_id}"
+    initial = client.post(feed_path + "/refresh")
+    run_job(library_backend, publisher, initial.json()["job_id"])
+    list_path = "/api/v1/articles"
+    filters = {"source": "rss", "feed_id": feed_id}
+    article = client.get(list_path, params=filters).json()["items"][0]
+    article_path = f"{list_path}/{article['id']}"
+    assert client.patch(article_path, json={"read": True, "action": "trash_if_read"}).json()["location"] == "trash"
+    moment = now()
+    with write(engine) as db:
+        db.get(Article, article["id"]).state_at = (moment - 31 * 86400) * 1_000_000_000
+    scheduler.clean_expired(engine, config, moment)
+    assert client.get(article_path).status_code == 404
+
+    for action in ("refresh", "older"):
+        request = client.post(f"{feed_path}/{action}")
+        assert request.status_code == 202
+        run_job(library_backend, publisher, request.json()["job_id"], advance=True)
+        assert all(item["url"] != article["url"] for item in client.get(list_path, params=filters).json()["items"])
+
+
 def test_custom_feed_title_syncs_and_survives_refresh(library_backend, publisher):
     client, engine, _ = library_backend
     publisher.publish_feed("/feed", "nasa.xml")

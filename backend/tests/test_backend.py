@@ -611,6 +611,75 @@ def test_explicit_restore_target_is_safe_to_retry(backend):
         assert result["location"] == "inbox" and result["trash_origin"] is None
 
 
+@pytest.mark.parametrize(("setup", "location"), [
+    ({}, "inbox"),
+    ({"read": True, "starred": True}, "inbox"),
+    ({"read": True, "action": "archive"}, "archive"),
+    ({"read": True}, "trash"),
+])
+def test_leaving_an_article_only_trashes_unprotected_read_articles(backend, setup, location):
+    app, client, token, ids = backend
+    client.headers.update(bearer(token))
+    path = f"/api/v1/articles/{ids['article']}"
+    assert client.patch(path, json=setup).status_code == 200
+    timestamps = set()
+    for _ in range(2):
+        result = client.patch(path, json={"action": "trash_if_read"})
+        assert result.status_code == 200 and result.json()["location"] == location
+        with Session(app.state.engine) as db:
+            article = db.get(Article, ids["article"])
+            assert article.location == location
+            timestamps.add(article.state_at)
+    assert len(timestamps) == 1
+
+
+def test_trash_cleanup_expires_articles_and_highlights_after_30_days(backend):
+    app, client, token, ids = backend
+    client.headers.update(bearer(token))
+    prefix = "/api/v1/articles"
+    expired = ids["article"]
+    mark = client.post(f"{prefix}/{expired}/highlights", json={
+        "quote": "Saved passage", "anchor": {"kind": "article"},
+    })
+    assert mark.status_code == 201
+
+    def save(name):
+        response = client.post(prefix, json={"url": f"https://example.test/{name}"})
+        assert response.status_code == 202
+        return response.json()["article"]["id"]
+
+    fresh, restored, pdf = map(save, ("fresh", "restored", "guide.pdf"))
+    moment = now()
+    cutoff = (moment - 30 * 86400) * 1_000_000_000
+    for article_id in (expired, fresh, restored):
+        assert client.patch(f"{prefix}/{article_id}", json={
+            "read": True, "action": "trash_if_read",
+        }).json()["location"] == "trash"
+    pdf_path = f"{prefix}/{pdf}"
+    assert client.patch(pdf_path, json={
+        "read": True, "action": "trash_if_read",
+    }).json()["location"] == "inbox"
+    assert client.delete(pdf_path).json()["location"] == "trash"
+
+    with write(app.state.engine) as db:
+        for article_id, timestamp in ((expired, cutoff), (fresh, cutoff + 1), (restored, cutoff), (pdf, cutoff)):
+            db.get(Article, article_id).state_at = timestamp
+    result = client.patch(f"{prefix}/{restored}", json={"read": False, "action": "restore_inbox"}).json()
+    assert result["location"] == "inbox" and not result["read"]
+    cursor = client.get("/api/v1/sync").json()["cursor"]
+    config = app.state.config
+    assert scheduler.clean_expired(app.state.engine, config, moment) == {ids["account"]}
+    assert scheduler.clean_expired(app.state.engine, config, moment) == set()
+    assert client.get(f"{prefix}/{expired}").status_code == 404
+    assert client.get(f"{prefix}/{fresh}").json()["location"] == "trash"
+    assert client.get(f"{prefix}/{restored}").json()["location"] == "inbox"
+    assert client.get(pdf_path).json()["location"] == "trash"
+    changes = client.get("/api/v1/sync", params={"after": cursor}).json()["items"]
+    assert {(change["kind"], change["id"], change["operation"]) for change in changes} == {
+        ("article", expired, "delete"), ("highlight", mark.json()["id"], "delete"),
+    }
+
+
 def test_starred_articles_sync_and_survive_archive_and_trash(backend):
     _, client, token, ids = backend
     client.headers.update(bearer(token))

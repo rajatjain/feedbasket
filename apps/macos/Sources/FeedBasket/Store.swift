@@ -4,6 +4,12 @@ import Observation
 
 @MainActor @Observable
 final class BasketStore {
+    struct OpenArticle: Equatable {
+        let id: String
+        let scope: UUID
+        let libraryID: String?
+    }
+
     static let defaultOrigin = "http://127.0.0.1:12000"
     private(set) var origin: URL
     private(set) var profile: Profile?
@@ -31,6 +37,7 @@ final class BasketStore {
     @ObservationIgnored private var loginTask: Task<Void, Never>?
     @ObservationIgnored private var toastTasks: [BasketToast.Location: Task<Void, Never>] = [:]
     @ObservationIgnored private var blockedCopies: Set<String> = []
+    @ObservationIgnored private var openArticles: [UUID: OpenArticle] = [:]
     private var readerBodies: [String: String] = [:]
 
     var api: API { API(origin: origin, token: token) }
@@ -371,6 +378,20 @@ final class BasketStore {
         return true
     }
 
+    func setOpenArticle(_ reading: OpenArticle?, in window: UUID) {
+        let previous = openArticles[window]
+        openArticles[window] = reading
+        guard let previous, previous.scope == updateScope, previous.libraryID == library.libraryID,
+              !openArticles.values.contains(previous),
+              article(previous.id)?.shouldTrashAfterReading == true else { return }
+        change(Mutation(articleID: previous.id, action: "trash_if_read"), automatic: true)
+    }
+
+    func restoreToInbox(_ id: String) {
+        guard article(id)?.location == "trash" else { return }
+        change(Mutation(articleID: id, read: false, action: "restore_inbox"))
+    }
+
     @discardableResult
     func change(_ mutation: Mutation, automatic: Bool = false) -> Bool {
         guard profile != nil, let current = article(mutation.articleID) else { return false }
@@ -413,7 +434,8 @@ final class BasketStore {
             if let starred = mutation.starred { article.starred = starred }
             if let tags = mutation.tags { article.tags = tags }
             switch mutation.action {
-            case "trash" where article.location != "trash":
+            case "trash" where article.location != "trash",
+                 "trash_if_read" where article.shouldTrashAfterReading:
                 priorLocation = article.location
                 article.trash_origin = priorLocation
                 article.location = "trash"

@@ -14,7 +14,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from . import highlights, publisher
-from .db import Article, Feed, FeedEntry, Job, Setting, changed, enqueue, get_setting, now, set_setting, write
+from .db import Article, Feed, FeedEntry, Job, PurgedFeedEntry, Setting, changed, enqueue, get_setting, now, set_setting, write
 from .extraction import FetchError, PublisherHTTPError, clean_text, fetch, normalize_url, parse_html, pdf_url, safe_html, usable
 from .library import locate, mark_pdf_link, store_body
 
@@ -255,8 +255,8 @@ def unsubscribe(db, feed):
 
 
 def import_entry(db, feed, entry):
-    item = db.get(FeedEntry, (feed.id, entry.key))
-    if item:
+    key = (feed.id, entry.key)
+    if db.get(FeedEntry, key) or db.get(PurgedFeedEntry, key):
         return False
     article = locate(db, feed.account_id, entry.url, entry.title, entry.published)
     if pdf_url(entry.url) and article.document_type != "pdf":
@@ -425,7 +425,11 @@ def refresh(engine, config, feed_id, *, older=False, fetch_document=fetch, job_i
             return
         if older and not feed.initial_done:
             raise FetchError("Refresh the subscription before fetching older articles")
-        known = set() if website else set(db.scalars(select(FeedEntry.key).where(FeedEntry.feed_id == feed.id)))
+        known = set() if website else set(db.scalars(
+            select(FeedEntry.key).where(FeedEntry.feed_id == feed.id).union_all(
+                select(PurgedFeedEntry.key).where(PurgedFeedEntry.feed_id == feed.id),
+            ),
+        ))
         mode = "older" if older else "refresh" if feed.initial_done else "initial"
         url, previous_newest, last_checked = feed.url, feed.newest_at, feed.last_checked
         history_key = "older:" + feed_id

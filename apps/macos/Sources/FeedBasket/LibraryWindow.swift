@@ -61,6 +61,7 @@ struct LibraryWindow: View {
     @BasketState private var restoringReadStatus: String?
     @BasketState private var restoredLibrary = false
     @BasketState private var focusedListTopID: String?
+    @BasketState private var windowID = UUID()
     @BasketState private var openedImage: ArticleImage?
     @BasketState private var imageUsesWindow = false
     @BasketState private var restoreImageFocus: (() -> Void)?
@@ -138,6 +139,9 @@ struct LibraryWindow: View {
         let highlight = current == .highlights ? highlightSelection.flatMap { store.library.highlights?[$0] } : nil
         let article = current == .highlights ? highlight.flatMap { store.article($0.article_id) }
             : selectedArticles.count == 1 && selection.count == 1 ? selectedArticles.first : nil
+        let reading = article.map {
+            BasketStore.OpenArticle(id: $0.id, scope: store.updateScope, libraryID: store.library.libraryID)
+        }
         ZStack {
             if readerFocused, let article {
                 reader(article, highlight: highlight)
@@ -251,10 +255,12 @@ struct LibraryWindow: View {
         }
         .onChange(of: displayed.map(\.id)) { _, ids in selection.formIntersection(ids) }
         .onChange(of: article == nil) { if article == nil { readerFocused = false } }
-        .onChange(of: article?.id) {
+        .onChange(of: reading, initial: true) {
             openedImage = nil
             restoreImageFocus = nil
+            store.setOpenArticle(reading, in: windowID)
         }
+        .onDisappear { store.setOpenArticle(nil, in: windowID) }
         .onChange(of: store.profile?.id) { shelf = .rss; selection = []; username = "" }
         .onChange(of: store.updateScope) {
             clearRestartTargets()
@@ -732,8 +738,10 @@ struct LibraryWindow: View {
                             ForEach(ArticleRowAction.allCases.filter { $0.allows(article) }, id: \.self) { action in
                                 Button(action.title(for: article)) { performRowAction(action, on: article) }
                             }
-                            if ArticleAction.star.allows(article) {
-                                Button(ArticleAction.star.title(for: article)) { perform(.star, on: article) }
+                            if article.location == "trash" && !article.isPDF {
+                                Button("Restore to Inbox") { store.restoreToInbox(article.id) }
+                            } else if ArticleAction.trash.allows(article) {
+                                Button("Move to Trash", role: .destructive) { perform(.trash, on: article) }
                             }
                         } else if targets.count > 1 {
                             ForEach(ArticleBatchAction.allCases, id: \.self) { action in
@@ -805,7 +813,7 @@ struct LibraryWindow: View {
         switch action {
         case .star:
             store.change(Mutation(articleID: latest.id, starred: !latest.isStarred))
-        case .archive, .dislike:
+        case .archive, .trash:
             let articles = selected == latest.id ? filtered(documentShelf, mixed: hasMixedTypes) : []
             let nextIndex = articles.firstIndex { $0.id == latest.id }.map { $0 + 1 }
             let mutation = Mutation(articleID: latest.id, action: action == .archive ? "archive" : "trash")

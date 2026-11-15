@@ -38,6 +38,7 @@ struct Article: Codable, Identifiable {
     var source: String { original?.host() ?? "" }
     var isStarred: Bool { starred == true }
     var isPDF: Bool { document_type == "pdf" }
+    var shouldTrashAfterReading: Bool { !isPDF && location == "inbox" && read && !isStarred }
 }
 
 struct PDFMetadata: Codable {

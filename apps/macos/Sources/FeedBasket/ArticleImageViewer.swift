@@ -65,7 +65,6 @@ struct ArticleImageReaderBounds: PreferenceKey {
 
 struct ArticleImageViewer: View {
     @Environment(\.basketStyle) private var style
-    @FocusState private var closeFocused: Bool
     @BasketState private var loaded: NSImage?
     @BasketState private var failed = false
     @BasketState private var zoom = ImageZoomRequest(command: .fit)
@@ -119,7 +118,6 @@ struct ArticleImageViewer: View {
         .accessibilityLabel("Image viewer")
         .onExitCommand(perform: close)
         .task {
-            closeFocused = true
             await load()
         }
     }
@@ -151,7 +149,6 @@ struct ArticleImageViewer: View {
             }
             PDFToolbarButton(title: "Close image", icon: "xmark", action: close)
                 .focusable()
-                .focused($closeFocused)
                 .keyboardShortcut(.cancelAction)
         }
         .padding(5)

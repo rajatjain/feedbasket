@@ -2,11 +2,12 @@ from collections import defaultdict
 from time import time_ns
 from uuid import uuid4
 
-from sqlalchemy import delete, exists, func, select, update
+from sqlalchemy import delete, exists, func, insert, select, update
+from sqlalchemy.orm import load_only
 
 from . import highlights
 from .db import (
-    Account, Article, ArticleRedirect, ArticleTag, ArticleURL, Feed, FeedEntry,
+    Account, Article, ArticleRedirect, ArticleTag, ArticleURL, Feed, FeedEntry, PurgedFeedEntry,
     changed, enqueue, now,
 )
 from .extraction import clean_text, normalize_url, pdf_url
@@ -16,6 +17,8 @@ WORD_COUNT_BLOCKS = {
     "ul", "ol", "li", "dl", "dt", "dd", "blockquote", "pre", "table", "tr", "th", "td",
     "figure", "figcaption",
 }
+
+TRASH_RETENTION_SECONDS = 30 * 86400
 
 def library_visible():
     return (Article.pdf_key.is_(None)) | (Article.saved_at.is_not(None))
@@ -199,6 +202,12 @@ def update_article(db, article, *, read=None, starred=None, action=None, tags=No
         article.read, article.read_at = read, time_ns()
     if starred is not None and starred != article.starred:
         article.starred, article.starred_at = starred, time_ns()
+    if action == "trash_if_read":
+        if (article.document_type == "article" and article.location == "inbox"
+                and article.read and not article.starred):
+            action = "trash"
+        elif read is None and starred is None and tags is None:
+            return
     if action == "trash" and article.location != "trash":
         article.trash_origin = article.location
         article.location, article.state_at = "trash", time_ns()
@@ -214,6 +223,30 @@ def update_article(db, article, *, read=None, starred=None, action=None, tags=No
     if tags is not None:
         set_tags(db, article, tags, replace=True)
     changed(db, article.account_id, "article", article.id)
+
+
+def remove_entry(db, article):
+    highlights.record_deletions(db, article.account_id, select(Article.id).where(Article.id == article.id))
+    changed(db, article.account_id, "article", article.id, "delete")
+    db.delete(article)
+
+
+def purge_expired_trash(db, moment):
+    cutoff = (moment - TRASH_RETENTION_SECONDS) * 1_000_000_000
+    accounts = set()
+    expired = select(Article).options(load_only(Article.id, Article.account_id)).where(
+        Article.document_type == "article", Article.location == "trash", Article.state_at <= cutoff,
+    )
+    for article in db.scalars(expired):
+        # Preserve subscription deduplication after deleting the article and its body.
+        db.execute(insert(PurgedFeedEntry).from_select(
+            ["feed_id", "key"], select(FeedEntry.feed_id, FeedEntry.key).join(Feed).where(
+                FeedEntry.article_id == article.id, Feed.kind == "feed",
+            ),
+        ))
+        remove_entry(db, article)
+        accounts.add(article.account_id)
+    return accounts
 
 
 def stored_bytes(db, account_id):

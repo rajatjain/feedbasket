@@ -2,13 +2,13 @@ import AppKit
 import SwiftUI
 
 enum ArticleAction: CaseIterable {
-    case archive, star, dislike
+    case archive, star, trash
 
     var key: KeyEquivalent {
         switch self {
         case .archive: "a"
         case .star: .upArrow
-        case .dislike: .downArrow
+        case .trash: .downArrow
         }
     }
 
@@ -16,7 +16,7 @@ enum ArticleAction: CaseIterable {
         switch self {
         case .archive: "⌘⇧A"
         case .star: "⌘⇧↑"
-        case .dislike: "⌘⇧↓"
+        case .trash: "⌘⇧↓"
         }
     }
 
@@ -24,7 +24,7 @@ enum ArticleAction: CaseIterable {
         switch self {
         case .archive: "Archive"
         case .star: article?.isStarred == true ? "Unstar" : "Star"
-        case .dislike: article?.isPDF == true ? "Move to Trash" : "Dislike"
+        case .trash: "Move to Trash"
         }
     }
 
@@ -56,7 +56,7 @@ enum ArticleBatchAction: CaseIterable {
         switch self {
         case .read: !article.read
         case .archive: ArticleAction.archive.allows(article)
-        case .trash: ArticleAction.dislike.allows(article)
+        case .trash: ArticleAction.trash.allows(article)
         }
     }
 
@@ -89,13 +89,13 @@ enum ArticleBatchAction: CaseIterable {
 }
 
 enum ArticleRowAction: CaseIterable {
-    case readStatus, archive, dislike
+    case readStatus, archive, star
 
     var articleAction: ArticleAction? {
         switch self {
         case .readStatus: nil
         case .archive: .archive
-        case .dislike: .dislike
+        case .star: .star
         }
     }
 
@@ -107,7 +107,7 @@ enum ArticleRowAction: CaseIterable {
         switch self {
         case .readStatus: article.read ? "envelope.badge" : "envelope.open"
         case .archive: "archivebox"
-        case .dislike: article.isPDF ? "trash" : "hand.thumbsdown"
+        case .star: article.isStarred ? "star.fill" : "star"
         }
     }
 

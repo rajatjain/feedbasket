@@ -120,17 +120,11 @@ def import_file(engine, config, account_id, import_id, file, filename, size, dig
             return library.article_data(db, article), True
 
 
-def remove_entry(db, article):
-    highlights.record_deletions(db, article.account_id, select(Article.id).where(Article.id == article.id))
-    changed(db, article.account_id, "article", article.id, "delete")
-    db.delete(article)
-
-
 def request_deletion(db, article):
     if article.location != "trash":
         raise PDFConflict("Move the PDF to Trash before permanently deleting it.")
     if not article.pdf_key:
-        remove_entry(db, article)
+        library.remove_entry(db, article)
         return None, True
     updated = article.content_status != "deleting"
     article.content_status = "deleting"
@@ -191,5 +185,5 @@ def delete_locked_object(engine, config, article_id, *, cleanup):
             if cleanup:
                 db.delete(article)
             else:
-                remove_entry(db, article)
+                library.remove_entry(db, article)
                 return article.account_id

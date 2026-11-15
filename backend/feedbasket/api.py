@@ -40,7 +40,7 @@ class SaveRequest(BaseModel):
 class ArticlePatch(BaseModel):
     read: bool | None = None
     starred: bool | None = None
-    action: Literal["archive", "trash", "restore", "restore_archive", "restore_inbox"] | None = None
+    action: Literal["archive", "trash", "trash_if_read", "restore", "restore_archive", "restore_inbox"] | None = None
     tags: list[str] | None = Field(default=None, max_length=30)
 
 
@@ -220,6 +220,7 @@ def persist_article_update(request, article_id, account, **changes):
         transitions.append(f"tags_set={len(result['tags'])}")
     if transitions:
         log.info("Article updated article_id=%s %s", result["id"], " ".join(transitions))
+        request.app.state.saved_updates.publish(account.id)
     return result
 
 

@@ -207,7 +207,7 @@ struct PDFReader: View {
                     } else {
                         Button("Restore to Read Later") { store.change(Mutation(articleID: article.id, action: "restore")) }
                     }
-                    Button("Move to Trash", role: .destructive) { perform(.dislike) }
+                    Button("Move to Trash", role: .destructive) { perform(.trash) }
                     if article.pdf?.source == "link", let url = article.original {
                         Button("Open original") { NSWorkspace.shared.open(url) }
                     }

@@ -121,6 +121,8 @@ Use the account menu to sign in or create an account with a username. FeedBasket
 
 The app defaults to port `12000`. For the CLI backend, change it to port `8787` in **Settings → Connection**. **Settings → Storage** shows how much space offline articles use and lets you clear copies by date or all at once.
 
+Hover over an article row to mark it read or unread, archive it, or star it. When you leave a read article in the inbox, FeedBasket moves it to **Trash** unless it’s starred. Archive articles you want to keep and star ones you want to revisit. Choose **Restore to Inbox** to bring an article back as unread. The backend permanently removes articles and their highlights after 30 days in Trash.
+
 ## Save and read PDFs
 
 - **Save from macOS.** Click **+ Add** to paste a PDF link, choose a file, or drag one into the window. FeedBasket stores the URL for a linked PDF and uploads local files to Cloudflare R2. Find both under **Read Later → PDFs**, with the same tags you use for articles. When the sidebar is hidden, **+ Add** moves to the window toolbar.

@@ -173,6 +173,7 @@ def clean_expired(engine, config, moment):
         db.execute(delete(LoginSession).where(LoginSession.expires_at <= moment))
         db.execute(delete(Job).where(Job.finished_at < moment - 30 * 86400))
         backups.clean_staging(db, config.db_path)
+        return library.purge_expired_trash(db, moment)
 
 
 def run_worker(engine, config, stop: Event, publish_saved=None):
@@ -183,8 +184,11 @@ def run_worker(engine, config, stop: Event, publish_saved=None):
         try:
             moment = now()
             if moment - cleaned_at >= 3600:
-                clean_expired(engine, config, moment)
+                accounts = clean_expired(engine, config, moment)
                 cleaned_at = moment
+                if publish_saved:
+                    for account in accounts:
+                        publish_saved(account)
             if backfilling_word_counts:
                 with write(engine) as db:
                     accounts = library.backfill_word_counts(db)

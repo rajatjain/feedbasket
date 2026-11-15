@@ -143,6 +143,12 @@ class FeedEntry(Base):
     article_id: Mapped[str] = mapped_column(ForeignKey("articles.id", ondelete="CASCADE"), index=True)
 
 
+class PurgedFeedEntry(Base):
+    __tablename__ = "purged_feed_entries"
+    feed_id: Mapped[str] = mapped_column(ForeignKey("feeds.id", ondelete="CASCADE"), primary_key=True)
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+
+
 class Change(Base):
     __tablename__ = "changes"
     __table_args__ = (Index("ix_changes_account_id_id", "account_id", "id"),)

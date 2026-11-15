@@ -648,14 +648,14 @@ struct ArticleReader: View {
             }
             if ArticleAction.archive.allows(article) {
                 toolbarButton("Archive", icon: "archivebox", shortcut: ArticleAction.archive.shortcut) { perform(.archive) }
+            } else if article.location == "trash" {
+                toolbarButton("Restore to Inbox", icon: "arrow.uturn.backward") {
+                    store.restoreToInbox(article.id)
+                }
             } else {
                 toolbarButton("Restore", icon: "arrow.uturn.backward") {
                     store.change(Mutation(articleID: article.id, action: "restore"))
                 }
-            }
-            if ArticleAction.dislike.allows(article) {
-                toolbarButton(ArticleAction.dislike.title(), icon: "hand.thumbsdown",
-                              shortcut: ArticleAction.dislike.shortcut) { perform(.dislike) }
             }
             toolbarButton("Edit tags", icon: "tag", tooltipAlignment: article.original == nil ? .bottomTrailing : .bottom) {
                 tagText = article.tags.joined(separator: ", ")
