@@ -459,6 +459,9 @@ struct ArticleReader: View {
     @BasketState private var editingTags: Bool = false
     @BasketState private var tagText: String = ""
     @BasketState private var failure: (articleID: String, detail: String)? = nil
+    @BasketState private var completedReaderLoad: String?
+    @BasketState private var preferredMode = ArticleReaderPresentation.Mode.reader
+    @BasketState private var openedOriginal = false
     @BasketState private var retrying = false
     @BasketState private var discoveredFeeds: [SubscriptionPreview.Candidate] = []
     @BasketState private var subscribing: Set<String> = []
@@ -474,10 +477,78 @@ struct ArticleReader: View {
     }
 
     var body: some View {
-        let preferences = preferences
+        let html = store.html(for: article.id)
+        let original = OriginalArticlePage.webURL(article.original)
+        let readerLoad = "\(store.updateScope)-\(article.id)-\(article.content_status)-\(article.body_bytes)-\(store.canUseAPI)"
+        let presentation = ArticleReaderPresentation(
+            hasReader: html != nil, status: article.content_status, backendOnline: store.canUseAPI,
+            loadFinished: completedReaderLoad == readerLoad, hasOriginal: original != nil, preference: preferredMode
+        )
+        let showingOriginal = presentation.mode == .original
         VStack(alignment: .leading, spacing: 0) {
-            LibraryPaneHeader(horizontalInset: BasketTokens.spacing) { actions }
-                .zIndex(1)
+            LibraryPaneHeader(horizontalInset: BasketTokens.spacing) {
+                actions(presentation, hasOriginal: original != nil)
+            }
+            .zIndex(1)
+            ZStack {
+                readerContent(html)
+                    .opacity(showingOriginal ? 0 : 1)
+                    .allowsHitTesting(!showingOriginal)
+                    .accessibilityHidden(showingOriginal)
+                if let original, showingOriginal || openedOriginal {
+                    OriginalArticlePage(url: original)
+                        .id(original)
+                        .opacity(showingOriginal ? 1 : 0)
+                        .allowsHitTesting(showingOriginal)
+                        .accessibilityHidden(!showingOriginal)
+                }
+            }
+        }
+        .anchorPreference(key: ArticleImageReaderBounds.self, value: .bounds) { $0 }
+        .onChange(of: showingOriginal, initial: true) { if showingOriginal { openedOriginal = true } }
+        .task(id: autoReadDelay) { [scope = store.updateScope] in
+            guard !article.read, !manuallyChangedReadStatus else { return }
+            let delays = AutoReadPreference.delays
+            let delay = min(max(autoReadDelay, delays.lowerBound), delays.upperBound)
+            do { try await Task.sleep(for: .seconds(delay)) }
+            catch { return }
+            guard !Task.isCancelled, scope == store.updateScope, !manuallyChangedReadStatus,
+                  store.article(article.id)?.read == false else { return }
+            store.change(Mutation(articleID: article.id, read: true), automatic: true)
+        }
+        .task(id: readerLoad) {
+            failure = nil
+            let detail = await store.loadReader(article)
+            guard !Task.isCancelled else { return }
+            if let detail {
+                failure = (article.id, detail)
+            }
+            completedReaderLoad = readerLoad
+        }
+        .task(id: "\(store.updateScope)-\(article.id)-\(article.content_status)-\(article.body_bytes)-\(store.canUseAPI)") {
+            discoveredFeeds = []
+            guard store.canUseAPI, article.content_status == "ready" else { return }
+            do {
+                let feeds = try await store.linkedFeeds(for: article.id)
+                try Task.checkCancellation()
+                discoveredFeeds = feeds
+            } catch {
+                // Suggestions are optional and the reader remains available if a lookup fails.
+            }
+        }
+        .alert("Edit tags", isPresented: $editingTags) {
+            TextField("Comma-separated tags", text: $tagText)
+            Button("Save") {
+                do { store.change(Mutation(articleID: article.id, tags: try LibraryTags.parse(tagText))) }
+                catch { store.report(error) }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    private func readerContent(_ html: String?) -> some View {
+        let preferences = preferences
+        return VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 16) {
                 articleHeading
                 Rectangle()
@@ -487,7 +558,7 @@ struct ArticleReader: View {
             }
             .padding(.top, 24).padding(.bottom, 20)
             .readerColumn(width: preferences.columnWidth)
-            if let html = store.html(for: article.id) {
+            if let html {
                 ReaderPage(articleID: article.id, body: html, style: style, preferences: preferences,
                            linkedFeeds: linkedFeeds, subscribe: subscribeToLinkedFeed,
                            highlights: (store.library.highlights ?? [:]).values.filter { $0.article_id == article.id }.sorted { $0.id < $1.id },
@@ -520,42 +591,6 @@ struct ArticleReader: View {
                     Spacer()
                 }.readerColumn(width: preferences.columnWidth)
             }
-        }
-        .anchorPreference(key: ArticleImageReaderBounds.self, value: .bounds) { $0 }
-        .task(id: autoReadDelay) { [scope = store.updateScope] in
-            guard !article.read, !manuallyChangedReadStatus else { return }
-            let delays = AutoReadPreference.delays
-            let delay = min(max(autoReadDelay, delays.lowerBound), delays.upperBound)
-            do { try await Task.sleep(for: .seconds(delay)) }
-            catch { return }
-            guard !Task.isCancelled, scope == store.updateScope, !manuallyChangedReadStatus,
-                  store.article(article.id)?.read == false else { return }
-            store.change(Mutation(articleID: article.id, read: true), automatic: true)
-        }
-        .task(id: "\(store.updateScope)-\(article.id)-\(article.content_status)-\(store.canUseAPI)") {
-            failure = nil
-            if let detail = await store.loadReader(article), !Task.isCancelled {
-                failure = (article.id, detail)
-            }
-        }
-        .task(id: "\(store.updateScope)-\(article.id)-\(article.content_status)-\(article.body_bytes)-\(store.canUseAPI)") {
-            discoveredFeeds = []
-            guard store.canUseAPI, article.content_status == "ready" else { return }
-            do {
-                let feeds = try await store.linkedFeeds(for: article.id)
-                try Task.checkCancellation()
-                discoveredFeeds = feeds
-            } catch {
-                // Suggestions are optional and the reader remains available if a lookup fails.
-            }
-        }
-        .alert("Edit tags", isPresented: $editingTags) {
-            TextField("Comma-separated tags", text: $tagText)
-            Button("Save") {
-                do { store.change(Mutation(articleID: article.id, tags: try LibraryTags.parse(tagText))) }
-                catch { store.report(error) }
-            }
-            Button("Cancel", role: .cancel) {}
         }
     }
 
@@ -624,7 +659,7 @@ struct ArticleReader: View {
         }
     }
 
-    private var actions: some View {
+    private func actions(_ presentation: ArticleReaderPresentation, hasOriginal: Bool) -> some View {
         HStack(spacing: 3) {
             toolbarButton("Reading appearance", icon: "textformat", tooltipAlignment: .bottomLeading) { options.toggle() }
                 .popover(isPresented: $options) { appearanceOptions }
@@ -632,6 +667,15 @@ struct ArticleReader: View {
                           icon: isFocused ? "arrow.down.right.and.arrow.up.left" : "viewfinder",
                           active: isFocused, shortcut: isFocused ? "Esc" : nil,
                           tooltipAlignment: .bottomLeading, action: focus)
+            if hasOriginal {
+                HStack(spacing: 1) {
+                    modeButton(.reader, title: "Reader Mode", icon: "text.alignleft", presentation: presentation)
+                    modeButton(.original, title: "Original Page", icon: "globe", presentation: presentation)
+                }
+                .padding(2)
+                .background(style.color(BasketTokens.subtle).opacity(0.45), in: .rect(cornerRadius: BasketTokens.radius))
+                .disabled(!presentation.canSwitch)
+            }
             Spacer(minLength: 2)
             Divider().frame(height: 16).padding(.horizontal, 3)
 
@@ -700,6 +744,19 @@ struct ArticleReader: View {
             }
         }
         .buttonStyle(ReaderToolbarButtonStyle())
+    }
+
+    private func modeButton(_ mode: ArticleReaderPresentation.Mode, title: String, icon: String,
+                            presentation: ArticleReaderPresentation) -> some View {
+        let selected = presentation.mode == mode
+        return Button { preferredMode = mode } label: {
+            Label(title, systemImage: icon).labelStyle(.iconOnly)
+        }
+        .buttonStyle(ReaderToolbarButtonStyle(active: selected))
+        .foregroundStyle(style.color(BasketTokens.text))
+        .opacity(selected || presentation.canSwitch ? 1 : 0.4)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .modifier(ReaderTooltip(title: title, shortcut: nil, alignment: .bottom))
     }
 
     private func toolbarButton(_ title: String, icon: String, active: Bool = false, shortcut: String? = nil,
