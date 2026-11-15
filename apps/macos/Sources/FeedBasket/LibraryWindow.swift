@@ -35,7 +35,7 @@ struct LibraryWindow: View {
     @Environment(\.basketStyle) private var style
     @AppStorage("theme") private var theme = BasketTheme.system
     @BasketState private var showingServerStatus = false
-    @AppStorage("readStatusFilter") private var readFilter = "All"
+    @BasketState private var readFilters: [Shelf: String] = [:]
     @AppStorage("showAllSidebarFeeds") private var showAllSidebarFeeds = false
     @BasketState private var shelf: Shelf? = .rss
     @BasketState private var selection: Set<String> = []
@@ -58,7 +58,6 @@ struct LibraryWindow: View {
     @BasketState private var listPosition = RestartListPosition()
     @BasketState private var restartListTarget: String?
     @BasketState private var restoringShelf: Shelf?
-    @BasketState private var restoringReadStatus: String?
     @BasketState private var restoredLibrary = false
     @BasketState private var focusedListTopID: String?
     @BasketState private var windowID = UUID()
@@ -70,6 +69,15 @@ struct LibraryWindow: View {
     @BasketState private var username = ""
 
     private var current: Shelf { shelf ?? .rss }
+    private var readFilter: String { readFilters[current] ?? "Unread" }
+
+    private func setReadFilter(_ value: String) {
+        guard value != readFilter else { return }
+        readFilters[current] = value
+        if selection.count > 1 || selected.flatMap(store.article).map({ !matchesReadFilter($0) }) == true {
+            selection = []
+        }
+    }
     private var selected: String? { selection.count == 1 ? selection.first : nil }
     private var hasSourceFilter: Bool { [.starred, .archive, .trash].contains(current) }
     private var feeds: [Feed] {
@@ -246,13 +254,6 @@ struct LibraryWindow: View {
             savedSelection = nil
         }
         .onChange(of: mixed) { if !mixed { documentType = "All" } }
-        .onChange(of: readFilter) {
-            if restoringReadStatus == readFilter {
-                restoringReadStatus = nil
-                return
-            }
-            if selection.count > 1 || article.map({ !matchesReadFilter($0) }) == true { selection = [] }
-        }
         .onChange(of: displayed.map(\.id)) { _, ids in selection.formIntersection(ids) }
         .onChange(of: article == nil) { if article == nil { readerFocused = false } }
         .onChange(of: reading, initial: true) {
@@ -263,6 +264,7 @@ struct LibraryWindow: View {
         .onDisappear { store.setOpenArticle(nil, in: windowID) }
         .onChange(of: store.profile?.id) { shelf = .rss; selection = []; username = "" }
         .onChange(of: store.updateScope) {
+            readFilters = [:]
             clearRestartTargets()
             feedRename = nil
             addRequest = nil
@@ -325,7 +327,6 @@ struct LibraryWindow: View {
     private func openSavedItem(_ article: Article) {
         showSaved = true
         readerFocused = false
-        readFilter = "All"
         let destination: Shelf = article.isPDF ? .pdfs : .saved
         if shelf == destination { selectSavedItem(article.id) }
         else {
@@ -378,10 +379,7 @@ struct LibraryWindow: View {
         restoredLibrary = true
         if shelf != snapshot.shelf { restoringShelf = snapshot.shelf }
         shelf = snapshot.shelf
-        if readFilter != snapshot.readStatus {
-            restoringReadStatus = snapshot.readStatus
-            readFilter = snapshot.readStatus
-        }
+        readFilters[snapshot.shelf] = snapshot.readStatus
         showSubscriptions = snapshot.showSubscriptions
         showSaved = snapshot.showSaved
         columns = switch snapshot.columns {
@@ -423,7 +421,6 @@ struct LibraryWindow: View {
 
     private func clearRestartTargets() {
         restoringShelf = nil
-        restoringReadStatus = nil
         restoredLibrary = false
         focusedListTopID = nil
         restartListTarget = nil
@@ -686,7 +683,8 @@ struct LibraryWindow: View {
                     ] : []) + (hasSourceFilter ? [
                         .init(title: "Source", options: ["All", "Subscriptions", "Read Later"], selection: $source),
                     ] : [
-                        .init(title: "Read status", options: ["All", "Unread", "Read"], selection: $readFilter),
+                        .init(title: "Read status", options: ["All", "Unread", "Read"],
+                              selection: Binding(get: { readFilter }, set: setReadFilter)),
                     ]))
                 }
             }
@@ -781,7 +779,7 @@ struct LibraryWindow: View {
             Text(readFilter == "All" ? "No \(noun)" : "No \(readFilter.lowercased()) \(noun)")
                 .font(.headline)
             if readFilter != "All" {
-                Button("Show all") { readFilter = "All" }.buttonStyle(.link)
+                Button("Show all") { setReadFilter("All") }.buttonStyle(.link)
             }
         }
     }
