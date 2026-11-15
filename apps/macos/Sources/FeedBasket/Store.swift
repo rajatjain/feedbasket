@@ -13,6 +13,7 @@ final class BasketStore {
     private(set) var busy = false
     private(set) var signingIn = false
     private(set) var syncIssue: String?
+    private(set) var readerRefreshes: Set<String> = []
     private(set) var offlineCount = 0
     private(set) var offlineBytes = 0
     private(set) var updateScope = UUID()
@@ -489,7 +490,8 @@ final class BasketStore {
                 switch item.kind {
                 case "article":
                     if let article = item.article {
-                        if next.articles[article.id]?.body_bytes != article.body_bytes || article.content_status != "ready" {
+                        if article.content_status != "ready" ||
+                            (next.articles[article.id]?.body_bytes != article.body_bytes && !readerRefreshes.contains(article.id)) {
                             try disk?.remove(article.id)
                             readerBodies[article.id] = nil
                         }
@@ -553,6 +555,49 @@ final class BasketStore {
             await refresh(followUp: true)
         } catch {
             if scope == updateScope { report(error) }
+        }
+    }
+
+    func refreshReaderContent(_ id: String) async {
+        guard canUseAPI, readerRefreshes.insert(id).inserted else { return }
+        let scope = updateScope
+        let libraryID = library.libraryID
+        let api = self.api
+        defer { readerRefreshes.remove(id) }
+        do {
+            let job: JobRequest = try await api.call("/api/v1/articles/\(id)/refresh-reader", method: "POST")
+            guard scope == updateScope, libraryID == library.libraryID else { return }
+            guard let jobID = job.job_id else { throw APIError(status: 0, detail: "Reader refresh could not be queued.") }
+            notify("Refreshing reader content…", icon: "arrow.clockwise")
+
+            for _ in 0..<90 {
+                try await Task.sleep(for: .seconds(1))
+                guard scope == updateScope, libraryID == library.libraryID else { return }
+                let status: Job = try await api.call("/api/v1/jobs/\(jobID)")
+                if status.status == "failed" {
+                    throw APIError(status: 0, detail: status.error ?? "Could not refresh reader content.")
+                }
+                guard status.status == "done" else { continue }
+
+                let detail: Article = try await api.call("/api/v1/articles/\(id)")
+                guard scope == updateScope, libraryID == library.libraryID else { return }
+                guard let html = detail.body_html else {
+                    throw APIError(status: 0, detail: "The backend did not return refreshed reader content.")
+                }
+                if !blockedCopies.contains(detail.id), let disk, disk.read(detail.id) != nil || detail.saved_at != nil {
+                    try disk.store(OfflineCopy(date: detail.date, html: html), id: detail.id)
+                    updateUsage()
+                }
+                readerBodies[detail.id] = html
+                await refresh(followUp: true)
+                guard scope == updateScope, libraryID == library.libraryID else { return }
+                notify("Reader content refreshed.")
+                return
+            }
+            notify("Reader refresh is still queued or running.", icon: "clock")
+        } catch is CancellationError {
+        } catch {
+            if scope == updateScope, libraryID == library.libraryID { report(error) }
         }
     }
 

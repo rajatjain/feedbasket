@@ -13,13 +13,15 @@ from .logs import publisher_url
 log = logging.getLogger(__name__)
 
 
-def process_article(engine, article_id, *, fetch_document=None, job_id=None):
+def process_article(engine, article_id, *, fetch_document=None, job_id=None, refresh=False):
     started = monotonic()
     with Session(engine) as db:
         article = db.get(Article, article_id)
         if not article or article.document_type != "article" or article.location == "trash" or article.content_status == "cleared":
+            if refresh:
+                raise extraction.FetchError("The article is no longer available to refresh")
             return
-        url, rss_body = article.url, article.extractor == "rss"
+        url, rss_body = article.url, article.extractor == "rss" and not refresh
 
     try:
         if fetch_document is None:
@@ -29,6 +31,8 @@ def process_article(engine, article_id, *, fetch_document=None, job_id=None):
                 url, rss_body, fetch_document=fetch_document,
             )
     except extraction.PDFUnsupported:
+        if refresh:
+            raise extraction.FetchError("The publisher now serves a PDF instead of an article") from None
         saved_account = None
         with write(engine) as db:
             article = db.get(Article, article_id)
@@ -46,9 +50,13 @@ def process_article(engine, article_id, *, fetch_document=None, job_id=None):
             return
         raise
 
+    if refresh and not body:
+        raise extraction.FetchError("The publisher page has no readable article content")
     with write(engine) as db:
         article = db.get(Article, article_id)
         if not article or article.document_type != "article" or article.content_status == "cleared":
+            if refresh:
+                raise extraction.FetchError("The article is no longer available to refresh")
             return
         article = library.merge_alias(db, article, final_url)
         article = library.merge_alias(db, article, canonical)
@@ -56,9 +64,14 @@ def process_article(engine, article_id, *, fetch_document=None, job_id=None):
             article.url = canonical
         if title and (not article.title or article.title in {url, final_url}):
             article.title = title
-        if article.document_type == "article" and article.location != "trash" and article.content_status != "cleared":
-            if body and article.extractor != "rss":
-                library.store_body(db, article, body, extractor)
+        available = article.document_type == "article" and article.location != "trash" and article.content_status != "cleared"
+        if refresh and not available:
+            raise extraction.FetchError("The article is no longer available to refresh")
+        if available:
+            if body and (refresh or article.extractor != "rss"):
+                stored = library.store_body(db, article, body, extractor)
+                if refresh and not stored:
+                    raise extraction.FetchError("The replacement exceeds your storage quota")
             elif not article.body:
                 article.content_status = "unavailable"
         changed(db, article.account_id, "article", article.id)
@@ -96,8 +109,9 @@ def tick(engine, config, *, fetch_document=None, publish_saved=None):
                 fetch_document = publisher.Budget().fetch
             saved_account = feeds.refresh(engine, config, target, older=(kind == "older"),
                                           fetch_document=fetch_document, job_id=job_id)
-        elif kind == "extract":
-            saved_account = process_article(engine, target, fetch_document=fetch_document, job_id=job_id)
+        elif kind in {"extract", "reader_refresh"}:
+            saved_account = process_article(engine, target, fetch_document=fetch_document, job_id=job_id,
+                                            refresh=kind == "reader_refresh")
         elif kind == "backup":
             backups.run_backup(engine, config, job_id=job_id)
         elif kind in {"pdf_delete", "pdf_cleanup"}:
@@ -112,12 +126,12 @@ def tick(engine, config, *, fetch_document=None, publish_saved=None):
         if kind in {"pdf_delete", "pdf_cleanup"}:
             retry_in = error.delay if isinstance(error, pdfs.CleanupDeferred) else min(60 * attempt, 3600)
         else:
-            retry_in = 60 * attempt if attempt < 3 and not access_refused else 0
+            retry_in = 60 * attempt if attempt < 3 and not access_refused and kind != "reader_refresh" else 0
         url = None
         with write(engine) as db:
             job = db.get(Job, job_id)
             job.error = detail
-            article = db.get(Article, target) if kind == "extract" else None
+            article = db.get(Article, target) if kind in {"extract", "reader_refresh"} else None
             if article:
                 url = publisher_url(article.url)
             if retry_in:

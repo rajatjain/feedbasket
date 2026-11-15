@@ -9,7 +9,7 @@ from xml.etree import ElementTree
 import pytest
 from sqlalchemy import select
 
-from feedbasket import extraction, feeds, publisher as publisher_jobs, scheduler
+from feedbasket import extraction, feeds, library, publisher as publisher_jobs, scheduler
 from feedbasket.db import Article, Feed, FeedEntry, Job, now, write
 
 DATA = Path(__file__).with_name("data")
@@ -537,6 +537,78 @@ def test_guided_add_preview_and_save(library_backend, publisher, monkeypatch, pa
         with write(engine) as db:
             assert db.get(Feed, feed_id).initial_done
             assert len(list(db.scalars(select(FeedEntry.key).where(FeedEntry.feed_id == feed_id)))) == 10
+
+
+def test_extraction_preserves_inline_code_and_preformatted_blocks(library_backend, publisher):
+    client, _, _ = library_backend
+    publisher.routes["/technical-note"] = (200, {"Content-Type": "text/html"}, b"""
+        <html><head><title>A technical note</title></head><body><article>
+        <p>This technical note explains how model names are displayed in the library.
+        A model name can include its version, size, and file format.
+        Keep the exact name when looking it up in another application.</p>
+        <p>Take <a href="/model"><code>model-35B</code></a>:</p>
+        <ul><li>Choose the file with <code>Q4_K_M</code> in its name.</li></ul>
+        <table><tr><th>Part</th><th>Meaning</th></tr>
+        <tr><td><code>35B</code></td><td>The parameter count.</td></tr></table>
+        <p>Use <code>&lt;name&gt;</code> in a configuration file.</p>
+        <pre><code>model --version</code></pre>
+        <pre>First line
+    indented output</pre>
+        </article></body></html>
+    """)
+    article = client.post("/api/v1/articles", json={"url": publisher.origin + "/technical-note"}).json()["article"]
+    path = f"/api/v1/articles/{article['id']}"
+    run_job(library_backend, publisher, client.post(path + "/extract").json()["job_id"])
+    detail = client.get(path).json()
+    assert detail["extractor"] == "trafilatura"
+    tree = extraction.parse_html(detail["body_html"])
+    link, = tree.xpath('//p/a[code="model-35B"]')
+    assert link.getparent().text == "Take " and link.tail == ":"
+    assert link.get("href") == publisher.origin + "/model"
+    assert tree.xpath('//li/code[text()="Q4_K_M"]')
+    assert tree.xpath('//td/code[text()="35B"]')
+    assert tree.xpath('//p/code[text()="<name>"]')
+    assert [block.text_content().strip() for block in tree.xpath('//pre')] == [
+        "model --version", "First line\n    indented output",
+    ]
+
+
+def test_manual_reader_refresh_preserves_existing_rss_body_on_failure(library_backend, publisher):
+    client, engine, _ = library_backend
+    publisher.publish_article()
+    article = client.post("/api/v1/articles", json={
+        "url": publisher.origin + ARTICLE, "tags": ["weekend"],
+    }).json()["article"]
+    article_id = article["id"]
+    path = f"/api/v1/articles/{article_id}"
+    initial_job = client.post(path + "/extract").json()["job_id"]
+    run_job(library_backend, publisher, initial_job)
+    old = "<p>Existing content from the RSS feed.</p>"
+    with write(engine) as db:
+        library.store_body(db, db.get(Article, article_id), old, "rss")
+    assert client.patch(path, json={"read": True, "starred": True}).status_code == 200
+
+    good_response = publisher.routes[ARTICLE]
+    for bad_response in (
+        (503, {}, b"Unavailable"),
+        (200, {"Content-Type": "application/pdf"}, b"%PDF-1.7"),
+        (200, {"Content-Type": "text/html"}, b"<html><body>No article.</body></html>"),
+    ):
+        publisher.routes[ARTICLE] = bad_response
+        response = client.post(path + "/refresh-reader")
+        assert response.status_code == 202
+        job_id = response.json()["job_id"]
+        assert client.get(path).json()["body_html"] == old
+        run_job(library_backend, publisher, job_id, expected="failed")
+        detail = client.get(path).json()
+        assert detail["body_html"] == old and detail["content_status"] == "ready"
+        assert detail["document_type"] == "article"
+
+    publisher.routes[ARTICLE] = good_response
+    run_job(library_backend, publisher, client.post(path + "/refresh-reader").json()["job_id"])
+    detail = client.get(path).json()
+    assert "Blue Moon" in detail["body_html"] and detail["extractor"] == "trafilatura"
+    assert detail["read"] and detail["starred"] and detail["tags"] == ["weekend"]
 
 
 def test_article_extraction_discovers_extensionless_pdf(library_backend, publisher):

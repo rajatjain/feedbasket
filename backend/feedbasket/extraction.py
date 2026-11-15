@@ -8,6 +8,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, unquote, unquote_plus, urljoin, urlsplit, urlunsplit
+from uuid import uuid4
 
 import nh3
 import trafilatura
@@ -226,13 +227,44 @@ def mozilla(data, url):
     return result.stdout.decode("utf-8") if result.returncode == 0 else None
 
 
+def trafilatura_html(data, tree, url):
+    code_nodes = tree.xpath("//pre[not(ancestor::pre)] | //code[not(ancestor::pre or ancestor::code)]")
+    snippets = {}
+    blocks = {}
+    if code_nodes:
+        # Trafilatura can turn inline code into a block and nest blocks for <pre><code>.
+        # Protect the publisher's structure while leaving its surrounding text for extraction.
+        prefix = "FBCode" + uuid4().hex
+        for index, node in enumerate(code_nodes):
+            marker = f"{prefix}x{index}End"
+            node.attrib.clear()
+            markup = html.tostring(node, encoding="unicode", with_tail=False)
+            if node.tag == "pre":
+                blocks[marker] = markup
+            else:
+                snippets[marker] = markup
+                node.tag = "span"
+            node[:] = []
+            node.text = marker
+        data = html.tostring(tree, encoding="unicode")
+
+    body = trafilatura.extract(data, url=url, output_format="html",
+                              include_links=True, include_images=True, include_comments=False)
+    if body and code_nodes:
+        marker_pattern = rf"{prefix}x[0-9]+End"
+        # A bare <pre> can come out as a blockquote. Restore the complete source block.
+        body = re.sub(rf"<(blockquote|pre|p)>\s*({marker_pattern})\s*</\1>",
+                      lambda match: blocks.get(match[2], match[0]), body)
+        return re.sub(marker_pattern, lambda match: snippets.get(match[0], blocks.get(match[0], match[0])), body)
+    return body
+
+
 def extract(document):
     tree = parse_html(document.data)
     canonical = canonical_url(tree, document.url)
     title = clean_text(tree.findtext(".//title", ""))[:500]
     try:
-        primary = trafilatura.extract(document.data, url=document.url, output_format="html",
-                                      include_links=True, include_images=True, include_comments=False)
+        primary = trafilatura_html(document.data, tree, document.url)
     except (ValueError, etree.LxmlError):
         primary = None
     for name, candidate in (("trafilatura", primary), ("mozilla", None)):

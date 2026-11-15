@@ -14,8 +14,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-install-project
 COPY backend/feedbasket ./feedbasket
 COPY backend/migrations ./migrations
+# Install the local project from the copied source while retaining dependency caches.
+ARG FEEDBASKET_BUILD_SOURCE
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --no-editable
+    uv sync --locked --no-dev --no-editable --reinstall-package feedbasket
 
 FROM python:3.13-slim-bookworm
 ENV PATH="/app/.venv/bin:$PATH" \

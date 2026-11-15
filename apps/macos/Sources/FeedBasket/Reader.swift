@@ -645,6 +645,20 @@ struct ArticleReader: View {
 
             if let url = article.original {
                 Divider().frame(height: 16).padding(.horizontal, 3)
+                if article.extractor != "website" && article.location != "trash" {
+                    Menu {
+                        Button("Refresh Reader Content", systemImage: "arrow.clockwise") {
+                            Task { await store.refreshReaderContent(article.id) }
+                        }
+                        .disabled(!store.canUseAPI || store.readerRefreshes.contains(article.id))
+                    } label: {
+                        Label("More reader actions", systemImage: "ellipsis.circle").labelStyle(.iconOnly)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .modifier(ReaderTooltip(title: "More reader actions", shortcut: nil, alignment: .bottomTrailing))
+                }
                 toolbarButton("Open original", icon: "arrow.up.right.square", tooltipAlignment: .bottomTrailing) {
                     NSWorkspace.shared.open(url)
                 }

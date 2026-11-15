@@ -19,6 +19,7 @@ enum Shelf: Hashable, Codable {
 }
 
 struct LibraryWindow: View {
+    @FocusState private var articleListFocused: Bool
     private struct AddRequest: Identifiable {
         var file: URL? = nil
         let id = UUID()
@@ -664,7 +665,9 @@ struct LibraryWindow: View {
                 ScrollViewReader { proxy in
                     List(selection: $selection) {
                         ForEach(articles.prefix(limit)) { article in
-                            ArticleRow(article: article, archive: hasSourceFilter)
+                            ArticleRow(article: article, archive: hasSourceFilter, selected: selection.contains(article.id),
+                                       keyboardFocused: articleListFocused && selected == article.id,
+                                       perform: { performRowAction($0, on: article) })
                                 .trackRestartRow(article.id, in: listPosition)
                                 .tag(article.id)
                                 .basketSelection(selection.contains(article.id))
@@ -678,6 +681,7 @@ struct LibraryWindow: View {
                         }
                     }
                     .listStyle(.plain)
+                    .focused($articleListFocused)
                     .trackRestartViewport(in: listPosition)
                     .scrollContentBackground(.hidden)
                     .contextMenu(forSelectionType: String.self) { ids in
@@ -687,10 +691,11 @@ struct LibraryWindow: View {
                                 Button("Delete Permanently…", role: .destructive) { deletingPDF = article }
                                     .disabled(!store.canUseAPI || article.pdf?.deletion_pending == true)
                             }
-                            ForEach(ArticleAction.allCases, id: \.self) { action in
-                                if action.allows(article) {
-                                    Button(action.title(for: article)) { perform(action, on: article) }
-                                }
+                            ForEach(ArticleRowAction.allCases.filter { $0.allows(article) }, id: \.self) { action in
+                                Button(action.title(for: article)) { performRowAction(action, on: article) }
+                            }
+                            if ArticleAction.star.allows(article) {
+                                Button(ArticleAction.star.title(for: article)) { perform(.star, on: article) }
                             }
                         } else if targets.count > 1 {
                             ForEach(ArticleBatchAction.allCases, id: \.self) { action in
@@ -746,6 +751,15 @@ struct LibraryWindow: View {
         }
         .padding(BasketTokens.spacing * 2)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func performRowAction(_ action: ArticleRowAction, on article: Article) {
+        guard let latest = store.article(article.id), action.allows(latest) else { return }
+        if let articleAction = action.articleAction {
+            perform(articleAction, on: latest)
+        } else {
+            store.change(Mutation(articleID: latest.id, read: !latest.read))
+        }
     }
 
     private func perform(_ action: ArticleAction, on article: Article) {

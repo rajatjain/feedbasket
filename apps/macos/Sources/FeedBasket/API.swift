@@ -26,6 +26,7 @@ struct Article: Codable, Identifiable {
     let content_status: String
     let content_error: String?
     let body_bytes: Int
+    let extractor: String?
     let word_count: Int?
     let body_html: String?
     let document_type: String?

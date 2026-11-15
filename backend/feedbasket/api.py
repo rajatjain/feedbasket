@@ -402,6 +402,15 @@ def delete_highlight(request: Request, highlight_id: UUID, account: CurrentAccou
 
 @router.post("/articles/{article_id}/extract", status_code=202)
 def extract_article(request: Request, article_id: str, account: CurrentAccount):
+    return queue_reader_extraction(request, article_id, account)
+
+
+@router.post("/articles/{article_id}/refresh-reader", status_code=202)
+def refresh_reader(request: Request, article_id: str, account: CurrentAccount):
+    return queue_reader_extraction(request, article_id, account, refresh=True)
+
+
+def queue_reader_extraction(request, article_id, account, *, refresh=False):
     with write(request.app.state.engine) as db:
         article = get_article(db, account, article_id)
         if article.location == "trash":
@@ -413,7 +422,7 @@ def extract_article(request: Request, article_id: str, account: CurrentAccount):
         if not article.body:
             article.content_status = "pending"
             changed(db, account.id, "article", article.id)
-        job = enqueue(db, "extract", article.id)
+        job = enqueue(db, "reader_refresh" if refresh else "extract", article.id)
         result = {"job_id": job.id, "status": job.status}
         saved = article.saved_at is not None
     if saved:
@@ -568,7 +577,7 @@ def job_status(request: Request, job_id: int, account: CurrentAccount):
             raise HTTPException(404, "Job not found")
         if job.kind in {"refresh", "older"}:
             target = db.get(Feed, job.target)
-        elif job.kind == "extract":
+        elif job.kind in {"extract", "reader_refresh"}:
             target = library.article_for_id(db, account.id, job.target)
         else:
             target = None

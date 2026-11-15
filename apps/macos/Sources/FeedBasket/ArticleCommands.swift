@@ -88,6 +88,34 @@ enum ArticleBatchAction: CaseIterable {
     }
 }
 
+enum ArticleRowAction: CaseIterable {
+    case readStatus, archive, dislike
+
+    var articleAction: ArticleAction? {
+        switch self {
+        case .readStatus: nil
+        case .archive: .archive
+        case .dislike: .dislike
+        }
+    }
+
+    func title(for article: Article) -> String {
+        articleAction?.title(for: article) ?? (article.read ? "Mark as unread" : "Mark as read")
+    }
+
+    func icon(for article: Article) -> String {
+        switch self {
+        case .readStatus: article.read ? "envelope.badge" : "envelope.open"
+        case .archive: "archivebox"
+        case .dislike: article.isPDF ? "trash" : "hand.thumbsdown"
+        }
+    }
+
+    func allows(_ article: Article) -> Bool {
+        article.pdf?.deletion_pending != true && (articleAction?.allows(article) ?? true)
+    }
+}
+
 struct SelectedArticleActions {
     let article: Article
     let perform: (ArticleAction) -> Void

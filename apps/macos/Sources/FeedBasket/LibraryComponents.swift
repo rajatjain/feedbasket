@@ -78,8 +78,14 @@ struct ArticleBatchBar: View {
 
 struct ArticleRow: View {
     @Environment(\.basketStyle) private var style
+    @BasketState private var hovering = false
     let article: Article
     let archive: Bool
+    let selected: Bool
+    let keyboardFocused: Bool
+    let perform: (ArticleRowAction) -> Void
+    private let actionSize: CGFloat = 23
+    private let actionSpacing: CGFloat = 1
 
     private var readingTime: Text? {
         guard !article.isPDF, let words = article.word_count, words > 0 else { return nil }
@@ -96,6 +102,7 @@ struct ArticleRow: View {
                 Text(article.title)
                     .font(.system(size: 14, weight: article.read ? .medium : .semibold))
                     .lineLimit(3)
+                    .padding(.trailing, CGFloat(ArticleRowAction.allCases.count) * (actionSize + actionSpacing) + 4)
                 HStack(spacing: 5) {
                     if article.isPDF {
                         Label(article.pdf?.source == "upload" ? "Uploaded PDF" : "PDF link", systemImage: "doc.richtext")
@@ -128,8 +135,67 @@ struct ArticleRow: View {
                         .font(.system(size: BasketTokens.labelSize)).foregroundStyle(style.accent)
                 }
                 if !article.tags.isEmpty { TagLabel(tag: article.tags.joined(separator: " · ")) }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .overlay(alignment: .topTrailing) {
+            HStack(spacing: actionSpacing) {
+                ForEach(ArticleRowAction.allCases, id: \.self) { action in
+                    Button { perform(action) } label: {
+                        Label(action.title(for: article), systemImage: action.icon(for: article))
+                            .labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(ArticleRowButtonStyle(width: actionSize, selected: selected, destructive: action == .dislike))
+                    .help(action.title(for: article))
+                    .disabled(!action.allows(article))
+                }
             }
-        }.padding(.vertical, 8)
+            .fixedSize()
+            .opacity(hovering || keyboardFocused ? 1 : 0)
+            .allowsHitTesting(hovering || keyboardFocused)
+            .accessibilityHidden(!hovering && !keyboardFocused)
+        }
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            swipeButton(.readStatus, tint: style.accent)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            swipeButton(.archive, tint: style.accent)
+            swipeButton(.dislike, tint: .red)
+        }
+    }
+
+    @ViewBuilder private func swipeButton(_ action: ArticleRowAction, tint: Color) -> some View {
+        if action.allows(article) {
+            Button { perform(action) } label: {
+                Label(action.title(for: article), systemImage: action.icon(for: article))
+            }
+            .tint(tint)
+        }
+    }
+}
+
+private struct ArticleRowButtonStyle: ButtonStyle {
+    @Environment(\.basketStyle) private var style
+    @Environment(\.isEnabled) private var enabled
+    @BasketState private var hovering = false
+    let width: CGFloat
+    let selected: Bool
+    let destructive: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: .medium))
+            .frame(width: width, height: 20)
+            .foregroundStyle(hovering && destructive && enabled ? (selected ? Color(red: 0.55, green: 0.17, blue: 0.15) : .red)
+                             : selected ? style.selectionText : style.color(BasketTokens.text))
+            .background((hovering || configuration.isPressed) && enabled
+                        ? (selected ? style.selectionText.opacity(0.09) : style.color(BasketTokens.subtle)) : .clear,
+                        in: .rect(cornerRadius: BasketTokens.radius))
+            .opacity(enabled ? 1 : 0.4)
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
     }
 }
 

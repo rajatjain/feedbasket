@@ -1,6 +1,9 @@
 services:
   backend:
-    build: .
+    build:
+      context: .
+      args:
+        FEEDBASKET_BUILD_SOURCE: "${FEEDBASKET_BUILD_SOURCE:-}"
     init: true
     restart: unless-stopped
     user: "${FEEDBASKET_UID:-${FEEDBASKET_HOST_UID:-1000}}:${FEEDBASKET_GID:-${FEEDBASKET_HOST_GID:-1000}}"

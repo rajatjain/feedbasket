@@ -240,7 +240,7 @@ def unsubscribe(db, feed):
     deleted_ids = articles.with_only_columns(Article.id).where(Article.starred.is_(False))
     # In-flight workers recheck their target before writing. Keep their job IDs reserved until they finish.
     db.execute(delete(Job).where(Job.status != "running", Job.kind.in_(("refresh", "older")), Job.target == feed.id))
-    db.execute(delete(Job).where(Job.status != "running", Job.kind == "extract", Job.target.in_(deleted_ids)))
+    db.execute(delete(Job).where(Job.status != "running", Job.kind.in_(("extract", "reader_refresh")), Job.target.in_(deleted_ids)))
     kept = removed = 0
     for article_id, starred in db.execute(articles.with_only_columns(Article.id, Article.starred)):
         changed(db, feed.account_id, "article", article_id, "upsert" if starred else "delete")

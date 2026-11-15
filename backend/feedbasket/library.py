@@ -238,7 +238,8 @@ def backfill_word_counts(db, *, limit=100):
 def store_body(db, article, body, extractor):
     size = len(body.encode("utf-8"))
     quota = db.get(Account, article.account_id).quota
-    if stored_bytes(db, article.account_id) - article.body_bytes + size > quota:
+    fits_quota = stored_bytes(db, article.account_id) - article.body_bytes + size <= quota
+    if not fits_quota:
         if not article.body:
             article.content_status = "quota"
     else:
@@ -246,6 +247,7 @@ def store_body(db, article, body, extractor):
         article.word_count = count_words(body)
         article.extractor, article.content_status = extractor, "ready"
     changed(db, article.account_id, "article", article.id)
+    return fits_quota
 
 
 def clear_bodies(db, account_id, before=None):
