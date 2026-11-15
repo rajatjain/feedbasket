@@ -667,16 +667,16 @@ struct ArticleReader: View {
                           icon: isFocused ? "arrow.down.right.and.arrow.up.left" : "viewfinder",
                           active: isFocused, shortcut: isFocused ? "Esc" : nil,
                           tooltipAlignment: .bottomLeading, action: focus)
+            Spacer(minLength: 2)
             if hasOriginal {
                 HStack(spacing: 1) {
-                    modeButton(.reader, title: "Reader Mode", icon: "text.alignleft", presentation: presentation)
-                    modeButton(.original, title: "Original Page", icon: "globe", presentation: presentation)
+                    modeButton(.reader, title: "Reader Mode", presentation: presentation)
+                    modeButton(.original, title: "Original Page", presentation: presentation)
                 }
-                .padding(2)
+                .padding(.horizontal, 2)
                 .background(style.color(BasketTokens.subtle).opacity(0.45), in: .rect(cornerRadius: BasketTokens.radius))
                 .disabled(!presentation.canSwitch)
             }
-            Spacer(minLength: 2)
             Divider().frame(height: 16).padding(.horizontal, 3)
 
             toolbarButton(article.read ? "Mark as unread" : "Mark as read",
@@ -746,15 +746,18 @@ struct ArticleReader: View {
         .buttonStyle(ReaderToolbarButtonStyle())
     }
 
-    private func modeButton(_ mode: ArticleReaderPresentation.Mode, title: String, icon: String,
+    private func modeButton(_ mode: ArticleReaderPresentation.Mode, title: String,
                             presentation: ArticleReaderPresentation) -> some View {
         let selected = presentation.mode == mode
         return Button { preferredMode = mode } label: {
-            Label(title, systemImage: icon).labelStyle(.iconOnly)
+            ReaderModeIcon(mode: mode)
+                .stroke(style: StrokeStyle(lineWidth: 1.15, lineCap: .round))
+                .frame(width: 16, height: 12.35)
         }
-        .buttonStyle(ReaderToolbarButtonStyle(active: selected))
+        .buttonStyle(ReaderToolbarButtonStyle(active: selected, size: CGSize(width: 33, height: 24.7)))
         .foregroundStyle(style.color(BasketTokens.text))
         .opacity(selected || presentation.canSwitch ? 1 : 0.4)
+        .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .modifier(ReaderTooltip(title: title, shortcut: nil, alignment: .bottom))
     }
@@ -846,14 +849,38 @@ private extension View {
     }
 }
 
+private struct ReaderModeIcon: Shape {
+    let mode: ArticleReaderPresentation.Mode
+
+    func path(in rect: CGRect) -> Path {
+        Path { path in
+            switch mode {
+            case .reader:
+                for (index, width) in [14.0, 10.5, 13.0, 7.5].enumerated() {
+                    let y = rect.midY - 4.2 + CGFloat(index) * 2.8
+                    path.move(to: CGPoint(x: rect.midX - 7, y: y))
+                    path.addLine(to: CGPoint(x: rect.midX - 7 + width, y: y))
+                }
+            case .original:
+                let circle = CGRect(x: rect.midX - 5.6, y: rect.midY - 5.6, width: 11.2, height: 11.2)
+                path.addEllipse(in: circle)
+                path.addEllipse(in: circle.insetBy(dx: 3.35, dy: 0))
+                path.move(to: CGPoint(x: circle.minX, y: rect.midY))
+                path.addLine(to: CGPoint(x: circle.maxX, y: rect.midY))
+            }
+        }
+    }
+}
+
 struct ReaderToolbarButtonStyle: ButtonStyle {
     @Environment(\.basketStyle) private var style
     var active = false
+    var size = CGSize(width: 30, height: 30)
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 15, weight: .medium))
-            .frame(width: 30, height: 30)
+            .frame(width: size.width, height: size.height)
             .background(configuration.isPressed || active ? style.color(BasketTokens.subtle) : .clear,
                         in: RoundedRectangle(cornerRadius: BasketTokens.radius))
             .contentShape(Rectangle())
