@@ -483,6 +483,7 @@ final class BasketStore {
         while true {
             try Task.checkCancellation()
             var endpoint = "/api/v1/sync?limit=200&after=\(library.cursor)"
+            if library.feedCategories == nil { endpoint += "&include_feed_categories=true" }
             if let id = library.libraryID {
                 endpoint += "&library_id=\(id)"
             } else if library.cursor > 0 {
@@ -497,6 +498,7 @@ final class BasketStore {
                 reset = true
                 next.articles = [:]
                 next.feeds = [:]
+                next.feedCategories = nil
                 next.highlights = [:]
                 next.cursor = 0
                 next.libraryID = page.library_id
@@ -507,6 +509,9 @@ final class BasketStore {
                 applied = 0
                 Diagnostics.write("Library cursor reset; rebuilding from backend")
                 continue
+            }
+            if let categories = page.feed_categories {
+                next.feedCategories = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
             }
             for item in page.items {
                 switch item.kind {
@@ -532,11 +537,22 @@ final class BasketStore {
                         next.pendingPositions?[item.id] = nil
                     }
                 case "feed": next.feeds[item.id] = item.operation == "delete" || item.feed?.active == false ? nil : item.feed
+                case "feed_category":
+                    if page.feed_categories == nil {
+                        var categories = next.feedCategories ?? [:]
+                        categories[item.id] = item.operation == "delete" ? nil : item.feedCategory
+                        next.feedCategories = categories
+                    }
                 case "highlight":
                     var highlights = next.highlights ?? [:]
                     highlights[item.id] = item.operation == "delete" ? nil : item.highlight
                     next.highlights = highlights
                 default: break
+                }
+            }
+            if let assignments = page.feed_category_assignments {
+                for id in next.feeds.keys {
+                    next.feeds[id]?.category_id = assignments[id]
                 }
             }
             next.cursor = page.cursor
@@ -688,11 +704,12 @@ final class BasketStore {
         try await api.call(API.endpoint("/api/v1/links/preview", [URLQueryItem(name: "url", value: url.absoluteString)]), timeout: 30)
     }
 
-    func saveLink(_ url: String, title: String, tags: [String], pdf: Bool, feed: String?) async throws -> SavedLink {
+    func saveLink(_ url: String, title: String, tags: [String], pdf: Bool, feed: String?, categoryID: String? = nil) async throws -> SavedLink {
         let scope = updateScope
         var body: [String: Any] = ["url": url, "title": String(title.prefix(500)), "tags": tags,
                                    "document_type": pdf ? "pdf" : "article"]
         body["subscribe_url"] = feed
+        body["subscribe_category_id"] = feed == nil ? nil : categoryID
         let result: SavedLink = try await api.call("/api/v1/articles", method: "POST", body: body, timeout: 30)
         try await acceptSavedDocument(result.article, feed: result.feed, scope: scope)
         return result
@@ -815,15 +832,52 @@ final class BasketStore {
         try await api.call("/api/v1/articles/\(articleID)/linked-feeds", timeout: 50)
     }
 
-    func subscribe(url: String, title: String, website: Bool) async throws -> Feed {
+    var feedCategories: [FeedCategory] {
+        (library.feedCategories ?? [:]).values.sorted {
+            let left = $0.position ?? Int.max
+            let right = $1.position ?? Int.max
+            if left != right { return left < right }
+            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    func subscribe(url: String, title: String, website: Bool, categoryID: String? = nil) async throws -> Feed {
         let scope = updateScope
-        let feed: Feed = try await api.call("/api/v1/feeds", method: "POST", body: [
-            "url": url, "title": title, "kind": website ? "website" : "feed",
-        ])
+        var body: [String: Any] = ["url": url, "title": title, "kind": website ? "website" : "feed"]
+        body["category_id"] = categoryID
+        let feed: Feed = try await api.call("/api/v1/feeds", method: "POST", body: body)
         guard scope == updateScope else { throw CancellationError() }
         await refresh(followUp: true)
         guard scope == updateScope else { throw CancellationError() }
         return feed
+    }
+
+    func saveFeedCategory(_ name: String, id: String? = nil) async throws {
+        let path = "/api/v1/feed-categories" + (id.map { "/" + $0 } ?? "")
+        try await changeFeedCategories(path, method: id == nil ? "POST" : "PATCH", body: ["name": name])
+    }
+
+    func moveFeedCategory(_ id: String, up: Bool, relativeTo anchor: String? = nil) async throws {
+        var body = ["direction": up ? "up" : "down"]
+        body["relative_to"] = anchor
+        try await changeFeedCategories("/api/v1/feed-categories/" + id + "/move", method: "POST", body: body)
+    }
+
+    func deleteFeedCategory(_ id: String) async throws {
+        try await changeFeedCategories("/api/v1/feed-categories/" + id, method: "DELETE")
+    }
+
+    func assignFeedCategory(_ categoryID: String?, to feedIDs: [String]) async throws {
+        try await changeFeedCategories("/api/v1/feed-categories/assignments", method: "PUT",
+                                       body: ["feed_ids": feedIDs, "category_id": categoryID as Any? ?? NSNull()])
+    }
+
+    private func changeFeedCategories(_ path: String, method: String, body: sending [String: Any]? = nil) async throws {
+        let scope = updateScope
+        _ = try await api.send(path, method: method, body: body)
+        guard scope == updateScope else { throw CancellationError() }
+        await refresh(followUp: true)
+        guard scope == updateScope else { throw CancellationError() }
     }
 
     func feedAction(_ feed: Feed, path: String, recheck: Bool = false) async {

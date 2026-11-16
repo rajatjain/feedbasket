@@ -777,3 +777,55 @@ def test_admin_requires_configured_password(tmp_path):
         assert "ADMIN_PASSWORD" in page.text and 'name="password"' not in page.text
         assert client.post("/admin/backup/run", data={"token": ""}).status_code == 403
         assert client.get("/health").status_code == 200
+
+
+def test_feed_category_upgrade_preserves_a_populated_library(seeded_library):
+    config, token, ids = seeded_library
+    engine = make_engine(config.db_path)
+    try:
+        migrations = AlembicConfig()
+        migrations.set_main_option("script_location", str(DATA.parents[1] / "migrations"))
+        with engine.begin() as connection:
+            before = connection.execute(text("SELECT count(*) FROM feed_entries")).scalar_one()
+            assert before > 0
+            migrations.attributes["connection"] = connection
+            command.downgrade(migrations, "0011")
+    finally:
+        engine.dispose()
+
+    app = create_app(config, start_worker=False)
+    with TestClient(app, base_url=config.public_url, headers=bearer(token)) as client:
+        subscription, = client.get("/api/v1/feeds").json()
+        assert subscription["id"] == ids["feed"] and subscription["category_id"] is None
+        assert client.get("/api/v1/articles/" + ids["article"]).json()["tags"] == ["space", "weekend"]
+        assert client.get("/api/v1/feed-categories").json() == []
+        with Session(app.state.engine) as db:
+            assert db.execute(text("SELECT count(*) FROM feed_entries")).scalar_one() == before
+            assert db.execute(text("PRAGMA foreign_key_check")).all() == []
+
+
+def test_feed_category_order_upgrade_backfills_and_syncs_existing_categories(seeded_library):
+    config, token, ids = seeded_library
+    path = "/api/v1/feed-categories"
+    with TestClient(create_app(config, start_worker=False), base_url=config.public_url, headers=bearer(token)) as client:
+        sports = client.post(path, json={"name": "Sports"}).json()
+        art = client.post(path, json={"name": "Art"}).json()
+        assert client.patch("/api/v1/feeds/" + ids["feed"], json={"category_id": sports["id"]}).status_code == 200
+        baseline = client.get("/api/v1/sync").json()
+    engine = make_engine(config.db_path)
+    try:
+        migrations = AlembicConfig()
+        migrations.set_main_option("script_location", str(DATA.parents[1] / "migrations"))
+        with engine.begin() as connection:
+            migrations.attributes["connection"] = connection
+            command.downgrade(migrations, "0012")
+    finally:
+        engine.dispose()
+
+    with TestClient(create_app(config, start_worker=False), base_url=config.public_url, headers=bearer(token)) as client:
+        assert client.get(path).json() == [art | {"position": 0}, sports | {"position": 1}]
+        assert client.get("/api/v1/feeds").json()[0]["category_id"] == sports["id"]
+        updates = client.get("/api/v1/sync", params={"after": baseline["cursor"]}).json()["items"]
+        assert {item["id"]: item["data"]["position"] for item in updates if item["kind"] == "feed_category"} == {
+            art["id"]: 0, sports["id"]: 1,
+        }

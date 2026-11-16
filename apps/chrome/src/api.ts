@@ -9,13 +9,15 @@ export const defaultSettings = {
 export type Settings = typeof defaultSettings;
 export type Profile = { username?: string; id: string; name: string; email: string; picture: string };
 export type Session = { origin: string; token: string; profile: Profile };
-export type Save = { url: string; title: string; tags: string[]; subscribe_url?: string; document_type?: "article" | "pdf" };
+export type Save = { url: string; title: string; tags: string[]; subscribe_url?: string; subscribe_category_id?: string; document_type?: "article" | "pdf" };
+export type FeedCategory = { id: string; name: string };
 export type FeedChoice = { url: string; title: string };
+export type Subscription = FeedChoice & { category_id?: string };
 export type LinkPreview = { kind: "article" | "pdf" | "feed" | "unsupported"; title?: string; feeds?: FeedChoice[] };
-export type QueueAction = { article: Save; feed?: never } | { feed: FeedChoice; article?: never };
+export type QueueAction = { article: Save; feed?: never } | { feed: Subscription; article?: never };
 export type QueuedAction = QueueAction & { id: string; origin: string; account?: string; error?: string };
 export type DeliveryUpdate = { type: "delivery"; id: string; error?: string };
-export type ExtensionState = { settings: Settings; online: boolean; session?: Session; queue: QueuedAction[]; recentTags: string[] };
+export type ExtensionState = { settings: Settings; online: boolean; session?: Session; queue: QueuedAction[]; recentTags: string[]; feedCategories: FeedCategory[] };
 
 export function webURL(value: string): URL {
   const url = new URL(value);

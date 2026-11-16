@@ -4,6 +4,7 @@ import CryptoKit
 struct Library: Codable {
     var articles: [String: Article] = [:]
     var feeds: [String: Feed] = [:]
+    var feedCategories: [String: FeedCategory]?
     var pending: [Mutation] = []
     var cursor = 0
     var libraryID: String?

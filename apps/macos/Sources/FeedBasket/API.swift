@@ -100,11 +100,18 @@ struct SavedLink: Decodable {
     let feed: Feed?
 }
 
+struct FeedCategory: Codable, Identifiable {
+    let id: String
+    let name: String
+    let position: Int?
+}
+
 struct Feed: Codable, Identifiable {
     let id: String
     let url: String
     let title: String
     let custom_title: String?
+    var category_id: String?
     let interval_minutes: Int?
     let history_end: Bool
     let active: Bool?
@@ -144,6 +151,7 @@ struct SyncPage: Decodable {
         let article: Article?
         let feed: Feed?
         let highlight: Highlight?
+        let feedCategory: FeedCategory?
 
         enum CodingKeys: String, CodingKey { case kind, id, operation, replacement_id, data }
         init(from decoder: Decoder) throws {
@@ -154,12 +162,15 @@ struct SyncPage: Decodable {
             replacement_id = try box.decodeIfPresent(String.self, forKey: .replacement_id)
             article = kind == "article" ? try box.decodeIfPresent(Article.self, forKey: .data) : nil
             feed = kind == "feed" ? try box.decodeIfPresent(Feed.self, forKey: .data) : nil
+            feedCategory = kind == "feed_category" ? try box.decodeIfPresent(FeedCategory.self, forKey: .data) : nil
             highlight = kind == "highlight" ? try box.decodeIfPresent(Highlight.self, forKey: .data) : nil
         }
     }
     let items: [Change]
     let cursor: Int
     let has_more: Bool
+    let feed_categories: [FeedCategory]?
+    let feed_category_assignments: [String: String]?
     let reset_required: Bool
     let library_id: String?
 }

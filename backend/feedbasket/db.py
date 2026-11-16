@@ -116,11 +116,22 @@ class Highlight(Base):
     created_at: Mapped[int] = mapped_column(BigInteger, default=now)
 
 
+class FeedCategory(Base):
+    __tablename__ = "feed_categories"
+    __table_args__ = (UniqueConstraint("account_id", "name_key", name="uq_feed_category_name"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(Text)
+    name_key: Mapped[str] = mapped_column(Text)
+    position: Mapped[int] = mapped_column(Integer, server_default="0")
+
+
 class Feed(Base):
     __tablename__ = "feeds"
     __table_args__ = (UniqueConstraint("account_id", "url", name="uq_feed_account_url"),)
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    category_id: Mapped[str | None] = mapped_column(ForeignKey("feed_categories.id", ondelete="SET NULL"), index=True)
     url: Mapped[str] = mapped_column(Text)
     title: Mapped[str] = mapped_column(Text)
     custom_title: Mapped[str | None] = mapped_column(Text)

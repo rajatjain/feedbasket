@@ -1,10 +1,11 @@
 import { apiOrigin, APIError, defaultSettings, isPDFURL, request, webURL } from "./api.js";
-import type { DeliveryUpdate, ExtensionState, FeedChoice, Profile, QueueAction, QueuedAction, Save, Session, Settings } from "./api.js";
+import type { DeliveryUpdate, ExtensionState, FeedCategory, Profile, QueueAction, QueuedAction, Save, Session, Settings, Subscription } from "./api.js";
 import { paletteID } from "./palettes.js";
 
 const storage = chrome.storage.local;
 const queuePrefix = "save:";
 const alarm = "sync-feedbasket";
+const categoryKey = (session: Session) => `feed-categories:${session.origin}:${session.profile.id}`;
 const recentTagKey = (session: Session) => `recent-tags:${session.origin}:${session.profile.id}`;
 
 type Message =
@@ -12,7 +13,7 @@ type Message =
   | { type: "connect" | "signup"; username: string }
   | { type: "settings"; settings: Settings }
   | { type: "save"; article: Save }
-  | { type: "subscribe"; feed: FeedChoice }
+  | { type: "subscribe"; feed: Subscription }
   | { type: "retry" | "discard"; id: string };
 
 async function state(): Promise<ExtensionState> {
@@ -23,9 +24,11 @@ async function state(): Promise<ExtensionState> {
   settings.accent = paletteID(settings.accent);
   const session = all.session?.origin === settings.origin ? all.session : undefined;
   const recent = session ? all[recentTagKey(session)] : undefined;
+  const categories = session ? all[categoryKey(session)] : undefined;
   return {
     settings, session, online: all.online === true,
     queue: Object.entries(all).filter(([key]) => key.startsWith(queuePrefix)).map(([, item]) => item as QueuedAction),
+    feedCategories: Array.isArray(categories) ? categories : [],
     recentTags: Array.isArray(recent) ? recent.filter((name): name is string => typeof name === "string") : [],
   };
 }
@@ -46,7 +49,7 @@ function reportDelivery(item: QueuedAction) {
 }
 
 async function sync() {
-  const { settings, session, queue } = await state();
+  const { settings, session, queue, feedCategories } = await state();
   try {
     const health = await request<{ status: string }>(settings.origin, "/health");
     if (health.status !== "ok") throw new Error("Unexpected health response");
@@ -90,6 +93,16 @@ async function sync() {
       reportDelivery(item);
     }
   }
+  try {
+    const categories = await request<FeedCategory[]>(settings.origin, "/api/v1/feed-categories", session.token);
+    if (JSON.stringify(categories) !== JSON.stringify(feedCategories)) {
+      await storage.set({ [categoryKey(session)]: categories });
+    }
+  } catch (error) {
+    if (error instanceof APIError && error.status === 404 && feedCategories.length) {
+      await storage.remove(categoryKey(session));
+    }
+  }
   await status(true);
 }
 
@@ -125,7 +138,7 @@ async function handle(message: Message) {
     case "subscribe": {
       if (!current.session) throw new Error("Connect an account before subscribing.");
       const url = webURL(message.feed.url);
-      return enqueue({ feed: { url: url.href, title: message.feed.title.slice(0, 500) } }, current.session);
+      return enqueue({ feed: { url: url.href, title: message.feed.title.slice(0, 500), category_id: message.feed.category_id } }, current.session);
     }
     case "settings": {
       const settings = { ...message.settings, origin: apiOrigin(message.settings.origin), accent: paletteID(message.settings.accent) };

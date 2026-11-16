@@ -2,12 +2,13 @@ import AppKit
 import SwiftUI
 
 enum Shelf: Hashable, Codable {
-    case rss, feed(String), saved, pdfs, highlights, tag(String), starred, archive, trash
+    case rss, feed(String), category(String?), saved, pdfs, highlights, tag(String), starred, archive, trash
 
     var label: String {
         switch self {
         case .rss, .saved: "All articles"
         case .feed: "Subscription"
+        case .category: "Uncategorized"
         case .pdfs: "PDFs"
         case .highlights: "Highlights"
         case .tag(let name): name
@@ -43,6 +44,10 @@ struct LibraryWindow: View {
     @BasketState private var columns: NavigationSplitViewVisibility = NavigationSplitViewVisibility.all
     @BasketState private var readerFocused = false
     @BasketState private var showSubscriptions: Bool = true
+    @BasketState private var creatingFeedCategory = false
+    @BasketState private var renamingFeedCategory: FeedCategory?
+    @BasketState private var deletingFeedCategory: FeedCategory?
+    @BasketState private var collapsedFeedCategories: Set<Shelf> = []
     @BasketState private var showSaved: Bool = true
     @BasketState private var feedRename: FeedRename? = nil
     @BasketState private var addRequest: AddRequest? = nil
@@ -93,6 +98,11 @@ struct LibraryWindow: View {
         return nil
     }
 
+    private var currentCategoryName: String? {
+        if case .category(let id?) = current { return store.library.feedCategories?[id]?.name }
+        return nil
+    }
+
     private func matchesReadFilter(_ article: Article) -> Bool {
         readFilter == "All" || article.read == (readFilter == "Read")
     }
@@ -110,6 +120,10 @@ struct LibraryWindow: View {
             switch current {
             case .rss: return rss
             case .feed(let id): return article.feed_ids.contains(id) && store.library.feeds[id] != nil
+            case .category(let id):
+                return article.feed_ids.contains { feedID in
+                    store.library.feeds[feedID].map { $0.category_id == id } ?? false
+                }
             case .saved: return saved && !article.isPDF
             case .pdfs: return saved && article.isPDF
             case .tag(let tag): return saved && article.tags.contains(tag)
@@ -139,6 +153,15 @@ struct LibraryWindow: View {
     }
 
     var body: some View {
+        libraryBody
+            .onChange(of: store.feedCategories.map(\.id)) { _, ids in
+                if case .category(let id?) = current, !ids.contains(id) { shelf = .rss }
+            }
+            .sheet(isPresented: $creatingFeedCategory) { FeedCategoryNameSheet() }
+            .feedCategoryDialogs(renaming: $renamingFeedCategory, deleting: $deletingFeedCategory)
+    }
+
+    private var libraryBody: some View {
         let documents = documentShelf
         let mixed = Set(documents.map(\.isPDF)).count > 1
         let articles = filtered(documents, mixed: mixed)
@@ -150,7 +173,7 @@ struct LibraryWindow: View {
         let reading = article.map {
             BasketStore.OpenArticle(id: $0.id, scope: store.updateScope, libraryID: store.library.libraryID)
         }
-        ZStack {
+        return ZStack {
             if readerFocused, let article {
                 reader(article, highlight: highlight)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -267,6 +290,10 @@ struct LibraryWindow: View {
             readFilters = [:]
             clearRestartTargets()
             feedRename = nil
+            creatingFeedCategory = false
+            renamingFeedCategory = nil
+            deletingFeedCategory = nil
+            collapsedFeedCategories = []
             addRequest = nil
             deletingPDF = nil
             savedSelection = nil
@@ -372,6 +399,7 @@ struct LibraryWindow: View {
         guard matchesRestartScope(snapshot), store.library.libraryID == snapshot.libraryID else { return }
         switch snapshot.shelf {
         case .feed(let id) where store.library.feeds[id] == nil: return
+        case .category(let id?) where store.library.feedCategories?[id] == nil: return
         case .tag(let tag) where !tags.contains(tag): return
         default: break
         }
@@ -497,16 +525,31 @@ struct LibraryWindow: View {
             unreadFeedIDs.contains(feed.id) || shelf == .feed(feed.id)
         }
         return List(selection: $shelf) {
-            sidebarHeader { disclosure("Subscriptions", expanded: $showSubscriptions) }
+            sidebarHeader {
+                HStack {
+                    disclosure("Subscriptions", expanded: $showSubscriptions)
+                    Spacer()
+                    Button {
+                        creatingFeedCategory = true
+                    } label: {
+                        Label("New Category", systemImage: "plus")
+                            .labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(!store.canUseAPI)
+                    .help("New Category")
+                }
+            }
             if showSubscriptions {
                 Label("All articles", systemImage: "dot.radiowaves.left.and.right").tag(Shelf.rss).basketSelection(shelf == .rss)
-                ForEach(visibleFeeds) { feed in
-                    SidebarFeedRow(feed: feed, selected: shelf == .feed(feed.id),
-                                   hasUnread: unreadFeedIDs.contains(feed.id),
-                                   rename: { feedRename = FeedRename(feed: feed) },
-                                   unsubscribe: { unsubscribingFeed = feed })
-                        .tag(Shelf.feed(feed.id))
-                        .basketSelection(shelf == .feed(feed.id))
+                let categories = store.feedCategories
+                if categories.isEmpty {
+                    ForEach(visibleFeeds) { sidebarFeed($0, unread: unreadFeedIDs, nested: false) }
+                } else {
+                    ForEach(categories) { category in
+                        sidebarCategory(category.name, id: category.id, feeds: visibleFeeds, unread: unreadFeedIDs)
+                    }
+                    sidebarCategory("Uncategorized", id: nil, feeds: visibleFeeds, unread: unreadFeedIDs)
                 }
                 if !subscriptions.isEmpty {
                     Button {
@@ -558,6 +601,58 @@ struct LibraryWindow: View {
                 sidebarFooter
             }
         }
+    }
+
+    private func sidebarFeed(_ feed: Feed, unread: Set<String>, nested: Bool) -> some View {
+        SidebarFeedRow(feed: feed, selected: shelf == .feed(feed.id), hasUnread: unread.contains(feed.id),
+                       rename: { feedRename = FeedRename(feed: feed) }, unsubscribe: { unsubscribingFeed = feed })
+            .padding(.leading, nested ? 16 : 0)
+            .feedSidebarDraggable(store.canUseAPI && !store.feedCategories.isEmpty
+                                  ? FeedSidebarDrag(kind: .feed, id: feed.id, scope: store.updateScope) : nil)
+            .tag(Shelf.feed(feed.id))
+            .basketSelection(shelf == .feed(feed.id))
+    }
+
+    @ViewBuilder private func sidebarCategory(_ title: String, id: String?, feeds: [Feed], unread: Set<String>) -> some View {
+        let group = Shelf.category(id)
+        let collapsed = collapsedFeedCategories.contains(group)
+        let children = feeds.filter { $0.category_id == id }
+        let category = id.flatMap { store.library.feedCategories?[$0] }
+        SidebarRowWithActions(menuTitle: "Category actions for " + title, showsActions: category != nil) {
+            HStack(spacing: 5) {
+                Button {
+                    if collapsed { collapsedFeedCategories.remove(group) }
+                    else { collapsedFeedCategories.insert(group) }
+                } label: {
+                    Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .frame(width: 16, height: 20)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(collapsed ? "Expand " + title : "Collapse " + title)
+                Label(title, systemImage: "folder")
+                    .fontWeight(children.contains { unread.contains($0.id) } ? .semibold : .regular)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .feedSidebarDraggable(category.flatMap { category in
+                        store.canUseAPI ? FeedSidebarDrag(kind: .category, id: category.id, scope: store.updateScope) : nil
+                    })
+            }
+        } actions: {
+            if let category { categoryActions(category) }
+        }
+        .feedCategoryDropTarget(id)
+        .tag(group)
+        .basketSelection(shelf == group)
+        if !collapsed || children.contains(where: { shelf == .feed($0.id) }) {
+            ForEach(children) { sidebarFeed($0, unread: unread, nested: true) }
+        }
+    }
+
+    private func categoryActions(_ category: FeedCategory) -> some View {
+        FeedCategoryActions(category: category, rename: { renamingFeedCategory = category },
+                            delete: { deletingFeedCategory = category })
     }
 
     private var sidebarSectionDivider: some View {
@@ -667,7 +762,7 @@ struct LibraryWindow: View {
         return VStack(alignment: .leading, spacing: 0) {
             LibraryPaneHeader(horizontalInset: BasketTokens.spacing * 1.4) {
                 HStack {
-                    Text(currentFeed?.title ?? current.label)
+                    Text(currentFeed?.title ?? currentCategoryName ?? current.label)
                         .font(.headline)
                         .lineLimit(1)
                         .accessibilityAddTraits(.isHeader)

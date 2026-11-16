@@ -198,10 +198,45 @@ private struct ArticleRowButtonStyle: ButtonStyle {
     }
 }
 
+struct SidebarRowWithActions<Content: View, Actions: View>: View {
+    @BasketState private var hovering = false
+    let menuTitle: String
+    var showsActions = true
+    @ViewBuilder let content: () -> Content
+    @ViewBuilder let actions: () -> Actions
+
+    var body: some View {
+        HStack(spacing: 6) {
+            content()
+            if showsActions {
+                Menu {
+                    actions()
+                } label: {
+                    Label(menuTitle, systemImage: "ellipsis")
+                        .labelStyle(.iconOnly)
+                        .frame(width: 20, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help(menuTitle)
+                .opacity(hovering ? 1 : 0)
+                .allowsHitTesting(hovering)
+                .accessibilityHidden(!hovering)
+            }
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .contextMenu {
+            if showsActions { actions() }
+        }
+    }
+}
+
 struct SidebarFeedRow: View {
     @Environment(BasketStore.self) private var store
     @Environment(\.basketStyle) private var style
-    @BasketState private var hovering = false
     let feed: Feed
     let selected: Bool
     let hasUnread: Bool
@@ -209,7 +244,7 @@ struct SidebarFeedRow: View {
     let unsubscribe: () -> Void
 
     var body: some View {
-        HStack(spacing: 6) {
+        SidebarRowWithActions(menuTitle: "Feed actions") {
             Label {
                 Text(feed.title)
                     .fontWeight(hasUnread ? .semibold : .regular)
@@ -226,31 +261,15 @@ struct SidebarFeedRow: View {
                     .frame(width: 7, height: 7)
                     .accessibilityHidden(true)
             }
-
-            Menu {
-                actions
-            } label: {
-                Label("Feed actions", systemImage: "ellipsis")
-                    .labelStyle(.iconOnly)
-                    .frame(width: 20, height: 16)
-                    .contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Feed actions")
-            .opacity(hovering ? 1 : 0)
-            .allowsHitTesting(hovering)
-            .accessibilityHidden(!hovering)
+        } actions: {
+            actions
         }
-        .contentShape(Rectangle())
-        .onHover { hovering = $0 }
-        .contextMenu { actions }
     }
 
     @ViewBuilder private var actions: some View {
         Button("Rename", action: rename)
             .disabled(!store.canUseAPI)
+        MoveFeedCategoryMenu(feed: feed)
         Button("Mark All as Read") { store.markFeedAsRead(feed) }
             .disabled(!hasUnread)
         Divider()
@@ -268,6 +287,7 @@ struct FeedMenu: View {
     var body: some View {
         Menu {
             Button("Rename", action: rename)
+            MoveFeedCategoryMenu(feed: feed)
             Button("Refresh now") { Task { await store.feedAction(feed, path: "refresh") } }
             Menu("Refresh interval") {
                 ForEach([0, 15, 30, 60, 360, 1440], id: \.self) { value in

@@ -71,7 +71,7 @@ function report(error: unknown) {
 }
 
 let tab: chrome.tabs.Tab | undefined;
-let current: State = { settings: defaultSettings, online: false, queue: [], recentTags: [] };
+let current: State = { settings: defaultSettings, online: false, queue: [], recentTags: [], feedCategories: [] };
 let valid = false;
 let detected: LinkPreview["kind"] | undefined;
 let checkedOnline = false;
@@ -82,6 +82,7 @@ const earlyDeliveries = new Map<string, DeliveryUpdate>();
 let feedRequest = 0;
 let findingFeeds = false;
 const picker = select("feed-picker");
+const categoryPicker = select("feed-category");
 const tags = tagPicker();
 let tagRequest = 0;
 
@@ -135,6 +136,8 @@ function renderActions() {
   el("feed-row").hidden = !canSubscribe;
   el("feed-title").textContent = feed?.title ?? "";
   el("feed-picker-row").hidden = !canSubscribe || picker.options.length < 2;
+  el("feed-category-row").hidden = !canSubscribe || !current.feedCategories.length;
+  categoryPicker.disabled = disabled || findingFeeds;
   el("checking-page").hidden = !findingFeeds || pdf;
 }
 
@@ -216,6 +219,10 @@ function update(state: State) {
     input("save-as-pdf").checked = false;
     tags.reset();
   }
+  const category = changedSession ? "" : categoryPicker.value;
+  categoryPicker.replaceChildren(new Option("Uncategorized", ""),
+    ...state.feedCategories.map(item => new Option(item.name, item.id)));
+  categoryPicker.value = state.feedCategories.some(item => item.id === category) ? category : "";
   tags.setRecent(state.recentTags);
   render(state);
   if (changedSession || !wasOnline) loadTags();
@@ -277,7 +284,7 @@ el<HTMLFormElement>("save").onsubmit = event => {
 
   let message: object;
   if (subscribeOnly) {
-    message = { type: "subscribe", feed };
+    message = { type: "subscribe", feed: { ...feed, category_id: categoryPicker.value || undefined } };
   } else {
     const selectedTags = tags.forSave();
     if (!selectedTags) return;
@@ -285,6 +292,7 @@ el<HTMLFormElement>("save").onsubmit = event => {
       url: tab.url, title: (tab.title ?? "").slice(0, 500), tags: selectedTags,
       document_type: pdf ? "pdf" : "article",
       subscribe_url: both ? feed?.url : undefined,
+      subscribe_category_id: both ? categoryPicker.value || undefined : undefined,
     } };
   }
 
@@ -310,7 +318,7 @@ chrome.runtime.onMessage.addListener((delivery: DeliveryUpdate, sender) => {
 });
 chrome.storage.onChanged.addListener(changes => {
   if (Object.keys(changes).some(key => key === "settings" || key === "session" || key === "online" ||
-      key.startsWith("save:") || key.startsWith("recent-tags:"))) {
+      key.startsWith("save:") || key.startsWith("recent-tags:") || key.startsWith("feed-categories:"))) {
     void send<State>({ type: "state" }).then(update).catch(report);
   }
 });

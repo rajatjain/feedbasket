@@ -349,7 +349,8 @@ def serialize_article(article, tags, feeds, *, body=False):
     return data
 
 
-def article_query(account_id, source, location, feed_id, tag, read, document_type=None):
+def article_query(account_id, source, location, feed_id, tag, read, document_type=None, *,
+                  category_id=None, uncategorized=False):
     query = select(Article).where(Article.account_id == account_id, library_visible())
     if document_type is not None:
         query = query.where(Article.document_type == document_type)
@@ -366,11 +367,15 @@ def article_query(account_id, source, location, feed_id, tag, read, document_typ
         query = query.where(Article.saved_at.is_not(None))
     elif location == "inbox":
         query = query.where((Article.saved_at.is_not(None)) | feed_exists)
-    if feed_id:
-        query = query.where(exists(select(FeedEntry.feed_id).join(Feed).where(
-            FeedEntry.article_id == Article.id, Feed.id == feed_id,
-            Feed.account_id == account_id, Feed.active.is_(True)
-        )))
+    if feed_id or category_id or uncategorized:
+        linked_feeds = select(FeedEntry.feed_id).join(Feed).where(
+            FeedEntry.article_id == Article.id, Feed.account_id == account_id, Feed.active.is_(True)
+        )
+        if feed_id:
+            linked_feeds = linked_feeds.where(Feed.id == feed_id)
+        if category_id or uncategorized:
+            linked_feeds = linked_feeds.where(Feed.category_id == category_id)
+        query = query.where(exists(linked_feeds))
     if tag:
         query = query.where(exists(select(ArticleTag.tag).where(
             ArticleTag.article_id == Article.id, ArticleTag.tag == tag.strip().casefold()

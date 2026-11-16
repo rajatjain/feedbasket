@@ -146,3 +146,62 @@ def test_sync_cursor_advances_past_deleted_highlight_with_limit_one(backend_conf
         item, = last["items"]
         assert item["id"] == article_id and item["data"]["reading_position"]["page"] == 2
         assert not last["has_more"] and last["cursor"] > deleted["cursor"]
+
+
+def test_feed_category_move_wakes_stream_and_survives_restart(backend_config):
+    path = "/api/v1/feed-categories"
+    with serve(backend_config) as client:
+        signup = client.post("/api/v1/auth/signup", json={"username": "category-reader"})
+        headers = {"Authorization": "Bearer " + signup.json()["token"]}
+        feed = client.post("/api/v1/feeds", headers=headers, json={"url": "https://science.nasa.gov/feed/"}).json()
+        first = client.post(path, headers=headers, json={"name": "Science"}).json()
+        second = client.post(path, headers=headers, json={"name": "Astronomy"}).json()
+        assert client.get(path, headers=headers).json() == [first, second]
+        baseline = client.get("/api/v1/sync", headers=headers).json()
+        assert client.post(path + "/" + first["id"] + "/move", headers=headers,
+                           json={"direction": "up"}).status_code == 204
+        assert client.get("/api/v1/sync", headers=headers).json()["cursor"] == baseline["cursor"]
+
+        with client.stream("GET", "/api/v1/updates", headers=headers) as stream:
+            events = (line for line in stream.iter_lines() if line)
+            assert next(events) == "data: sync"
+            assert client.put(path + "/assignments", headers=headers, json={
+                "feed_ids": [feed["id"]], "category_id": first["id"],
+            }).status_code == 204
+            assert next(events) == "data: sync"
+            assert client.post(path + "/" + second["id"] + "/move", headers=headers,
+                               json={"direction": "up"}).status_code == 204
+            assert next(events) == "data: sync"
+            assert client.patch(path + "/" + first["id"], headers=headers,
+                                json={"name": "Aerospace"}).status_code == 200
+            assert next(events) == "data: sync"
+
+    with serve(backend_config) as client:
+        resumed = client.get("/api/v1/sync", headers=headers, params={
+            "after": baseline["cursor"], "library_id": baseline["library_id"], "include_feed_categories": True,
+        }).json()
+        assert not resumed["reset_required"]
+        assert {(item["kind"], item["id"]) for item in resumed["items"]} == {
+            ("feed_category", first["id"]), ("feed_category", second["id"]), ("feed", feed["id"]),
+        }
+        assert resumed["feed_categories"] == [second | {"position": 0}, first | {"name": "Aerospace", "position": 1}]
+        assert client.get("/api/v1/feeds", headers=headers).json()[0]["category_id"] == first["id"]
+        assert client.post(path + "/" + second["id"] + "/move", headers=headers,
+                           json={"direction": "down"}).status_code == 204
+        assert [item["id"] for item in client.get(path, headers=headers).json()] == [first["id"], second["id"]]
+        third = client.post(path, headers=headers, json={"name": "Observatories"}).json()
+        cursor = client.get("/api/v1/sync", headers=headers).json()["cursor"]
+        assert client.post(path + "/" + first["id"] + "/move", headers=headers, json={
+            "direction": "down", "relative_to": third["id"],
+        }).status_code == 204
+        assert [item["id"] for item in client.get(path, headers=headers).json()] == [second["id"], third["id"], first["id"]]
+        changes = client.get("/api/v1/sync", headers=headers, params={"after": cursor}).json()["items"]
+        assert {item["id"]: item["data"]["position"] for item in changes} == {
+            second["id"]: 0, third["id"]: 1, first["id"]: 2,
+        }
+        cursor = client.get("/api/v1/sync", headers=headers).json()["cursor"]
+        for anchor in (third, first):
+            assert client.post(path + "/" + first["id"] + "/move", headers=headers, json={
+                "direction": "down", "relative_to": anchor["id"],
+            }).status_code == 204
+        assert client.get("/api/v1/sync", headers=headers).json()["cursor"] == cursor

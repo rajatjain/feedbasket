@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 
-from . import feeds, highlights, library, pdfs, publisher, r2
+from . import feed_categories, feeds, highlights, library, pdfs, publisher, r2
 from .auth import current_account, profile, revoke
 from .db import Account, Article, ArticleTag, Change, Feed, Job, changed, enqueue, get_setting, now, write
 from .extraction import FetchError, PDFUnsupported, normalize_url, pdf_url
@@ -34,6 +34,7 @@ class SaveRequest(BaseModel):
     title: str = Field(default="", max_length=500)
     tags: list[str] = Field(default_factory=list, max_length=30)
     subscribe_url: str | None = Field(default=None, max_length=4000)
+    subscribe_category_id: UUID | None = None
     document_type: DocumentType = "article"
 
 
@@ -49,11 +50,27 @@ class SubscriptionRequest(BaseModel):
     title: str = Field(default="", max_length=500)
     interval_minutes: int | None = Field(default=None, ge=5, le=10080)
     kind: Literal["feed", "website"] = "feed"
+    category_id: UUID | None = None
 
 
 class FeedPatch(BaseModel):
+    category_id: UUID | None = None
     interval_minutes: int | None = Field(default=None, ge=5, le=10080)
     custom_title: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)] | None = None
+
+
+class FeedCategoryRequest(BaseModel):
+    name: str = Field(max_length=feed_categories.MAX_NAME_LENGTH)
+
+
+class FeedCategoryMove(BaseModel):
+    direction: Literal["up", "down"]
+    relative_to: UUID | None = None
+
+
+class FeedCategoryAssignment(BaseModel):
+    feed_ids: list[UUID] = Field(min_length=1, max_length=500)
+    category_id: UUID | None
 
 
 class QuotaRequest(BaseModel):
@@ -153,6 +170,7 @@ def logout(request: Request, account: CurrentAccount):
 def articles(
     request: Request, account: CurrentAccount, source: Source = "all", location: Location = "inbox",
     feed_id: Annotated[str | None, Query(max_length=36)] = None,
+    feed_category: UUID | Literal["uncategorized"] | None = None,
     tag: Annotated[str | None, Query(max_length=80)] = None,
     read: bool | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
@@ -160,7 +178,10 @@ def articles(
     document_type: DocumentType | None = None,
 ):
     with Session(request.app.state.engine) as db:
-        query = library.article_query(account.id, source, location, feed_id, tag, read, document_type)
+        category_id = (None if feed_category in (None, "uncategorized")
+                       else require_feed_category(db, account, feed_category).id)
+        query = library.article_query(account.id, source, location, feed_id, tag, read, document_type,
+                                      category_id=category_id, uncategorized=feed_category == "uncategorized")
         rows = list(db.scalars(query.offset(offset).limit(limit + 1)))
         return {
             "items": list(library.article_page_data(db, rows[:limit]).values()),
@@ -171,7 +192,10 @@ def articles(
 @router.post("/articles", status_code=202)
 def save(request: Request, body: SaveRequest, account: CurrentAccount):
     feed_url = checked_url(body.subscribe_url) if body.subscribe_url else None
+    if body.subscribe_category_id and not feed_url:
+        raise HTTPException(422, "A feed category requires a subscription URL.")
     with write(request.app.state.engine) as db:
+        category_id = checked_category_id(db, account, body.subscribe_category_id)
         try:
             article, updated = library.save_article(
                 db, account.id, body.url, body.title.strip(), body.tags,
@@ -180,7 +204,7 @@ def save(request: Request, body: SaveRequest, account: CurrentAccount):
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
         try:
-            feed = feeds.subscribe(db, account.id, feed_url, "") if feed_url else None
+            feed = feeds.subscribe(db, account.id, feed_url, "", category_id=category_id) if feed_url else None
         except ValueError as error:
             raise HTTPException(409, str(error)) from error
         result = {"article": library.article_data(db, article), "feed": feeds.feed_data(feed) if feed else None}
@@ -446,6 +470,70 @@ def tags(request: Request, account: CurrentAccount, ranked: bool = False):
         ).distinct().order_by(ArticleTag.tag)))
 
 
+def require_feed_category(db, account, category_id):
+    category = feed_categories.get(db, account.id, str(category_id))
+    if category is None:
+        raise HTTPException(404, "Feed category not found.")
+    return category
+
+
+def checked_category_id(db, account, category_id):
+    return require_feed_category(db, account, category_id).id if category_id is not None else None
+
+
+@router.get("/feed-categories")
+def list_feed_categories(request: Request, account: CurrentAccount):
+    with Session(request.app.state.engine) as db:
+        return [feed_categories.data(row) for row in feed_categories.list_for_account(db, account.id)]
+
+
+def save_category(request, account, name, category_id=None):
+    with write(request.app.state.engine) as db:
+        category = require_feed_category(db, account, category_id) if category_id is not None else None
+        try:
+            result = feed_categories.data(feed_categories.save(db, account.id, name, category))
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+    request.app.state.saved_updates.publish(account.id)
+    return result
+
+
+@router.post("/feed-categories", status_code=201)
+def create_feed_category(request: Request, body: FeedCategoryRequest, account: CurrentAccount):
+    return save_category(request, account, body.name)
+
+
+@router.put("/feed-categories/assignments", status_code=204)
+def assign_feed_category(request: Request, body: FeedCategoryAssignment, account: CurrentAccount):
+    with write(request.app.state.engine) as db:
+        category_id = checked_category_id(db, account, body.category_id)
+        for feed_id in dict.fromkeys(body.feed_ids):
+            feed_categories.assign(db, get_feed(db, account, str(feed_id)), category_id)
+    request.app.state.saved_updates.publish(account.id)
+
+
+@router.post("/feed-categories/{category_id}/move", status_code=204)
+def move_feed_category(request: Request, category_id: UUID, body: FeedCategoryMove, account: CurrentAccount):
+    with write(request.app.state.engine) as db:
+        category = require_feed_category(db, account, category_id)
+        anchor = require_feed_category(db, account, body.relative_to) if body.relative_to is not None else None
+        moved = feed_categories.move(db, category, body.direction, anchor)
+    if moved:
+        request.app.state.saved_updates.publish(account.id)
+
+
+@router.patch("/feed-categories/{category_id}")
+def rename_feed_category(request: Request, category_id: UUID, body: FeedCategoryRequest, account: CurrentAccount):
+    return save_category(request, account, body.name, category_id)
+
+
+@router.delete("/feed-categories/{category_id}", status_code=204)
+def delete_feed_category(request: Request, category_id: UUID, account: CurrentAccount):
+    with write(request.app.state.engine) as db:
+        feed_categories.remove(db, require_feed_category(db, account, category_id))
+    request.app.state.saved_updates.publish(account.id)
+
+
 @router.get("/feeds")
 def subscriptions(request: Request, account: CurrentAccount):
     with Session(request.app.state.engine) as db:
@@ -497,7 +585,8 @@ def subscribe(request: Request, body: SubscriptionRequest, account: CurrentAccou
     url = checked_url(body.url)
     with write(request.app.state.engine) as db:
         try:
-            feed = feeds.subscribe(db, account.id, url, body.title, body.interval_minutes, kind=body.kind)
+            feed = feeds.subscribe(db, account.id, url, body.title, body.interval_minutes, kind=body.kind,
+                                   category_id=checked_category_id(db, account, body.category_id))
         except ValueError as error:
             raise HTTPException(409, str(error)) from error
         result = feeds.feed_data(feed)
@@ -518,6 +607,8 @@ def update_feed(request: Request, feed_id: str, body: FeedPatch, account: Curren
                                if feed.last_checked else now())
         if "custom_title" in fields:
             feed.custom_title = body.custom_title
+        if "category_id" in fields:
+            feed.category_id = checked_category_id(db, account, body.category_id)
         if fields:
             changed(db, account.id, "feed", feed.id)
         result = feeds.feed_data(feed)
@@ -644,6 +735,7 @@ def sync(
     request: Request, account: CurrentAccount,
     after: Annotated[int, Query(ge=0, le=2**63 - 1)] = 0,
     limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    include_feed_categories: bool = False,
     library_id: Annotated[str | None, Query(max_length=36)] = None,
 ):
     with Session(request.app.state.engine) as db:
@@ -669,11 +761,19 @@ def sync(
                     payload = articles.get(row.object_id)
                 elif row.kind == "feed" and (feed := db.get(Feed, row.object_id)) and feed.account_id == account.id:
                     payload = feeds.feed_data(feed)
+                elif row.kind == "feed_category" and (category := feed_categories.get(db, account.id, row.object_id)):
+                    payload = feed_categories.data(category)
                 elif row.kind == "highlight" and (highlight := highlights.get(db, account.id, row.object_id)):
                     payload = highlights.data(highlight)
             if row.operation == "upsert" and payload is None:
                 continue
             items.append({"sequence": row.id, "kind": row.kind, "id": row.object_id,
                           "operation": row.operation, "replacement_id": row.replacement_id, "data": payload})
-        return {"items": items, "cursor": rows[min(len(rows), limit) - 1].id if rows else after,
-                "has_more": len(rows) > limit, "reset_required": False, "library_id": current_library}
+        result = {"items": items, "cursor": rows[min(len(rows), limit) - 1].id if rows else after,
+                  "has_more": len(rows) > limit, "reset_required": False, "library_id": current_library}
+        if include_feed_categories:
+            result["feed_categories"] = [feed_categories.data(row) for row in feed_categories.list_for_account(db, account.id)]
+            result["feed_category_assignments"] = dict(db.execute(select(Feed.id, Feed.category_id).where(
+                Feed.account_id == account.id, Feed.active.is_(True), Feed.category_id.is_not(None),
+            )).all())
+        return result

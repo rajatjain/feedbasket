@@ -750,3 +750,90 @@ def test_follow_website_records_changes_without_replacing_previous_versions(libr
     assert "ignored()" not in original["body_html"]
     assert client.post(first_path + "/extract").status_code == 409
     assert client.post(feed_path + "/older").json()["history_end"]
+
+
+def test_feed_categories_follow_subscription_and_import_workflow(library_backend, publisher):
+    client, engine, _ = library_backend
+    categories = "/api/v1/feed-categories"
+    owner = client.get("/api/v1/me").json()["id"]
+    cursor = client.get("/api/v1/sync").json()["cursor"]
+    created = client.post(categories, json={"name": "  Space   News  "})
+    assert created.status_code == 201
+    category = created.json()
+    category_id = category["id"]
+    assert category["name"] == "Space News"
+    for invalid in ("space news", "Uncategorized", "   "):
+        assert client.post(categories, json={"name": invalid}).status_code == 422
+
+    publisher.publish_feed("/feed", "nasa.xml")
+    publisher.publish_feed("/second", "nasa.xml")
+    publisher.publish_article()
+    direct = client.post("/api/v1/feeds", json={"url": publisher.origin + "/feed", "category_id": category_id})
+    assert direct.status_code == 202
+    assert direct.json()["category_id"] == category_id
+    together = client.post("/api/v1/articles", json={
+        "url": publisher.origin + ARTICLE, "subscribe_url": publisher.origin + "/second",
+        "subscribe_category_id": category_id, "tags": ["reference"],
+    })
+    assert together.status_code == 202
+    assert together.json()["article"]["tags"] == ["reference"]
+    assert together.json()["feed"]["category_id"] == category_id
+    feed_ids = [direct.json()["id"], together.json()["feed"]["id"]]
+    for feed_id in feed_ids:
+        job_id = client.post(f"/api/v1/feeds/{feed_id}/refresh").json()["job_id"]
+        run_job(library_backend, publisher, job_id, advance=True)
+
+    results = client.get("/api/v1/articles", params={"source": "rss", "feed_category": category_id}).json()["items"]
+    assert results
+    assert len(results) == len({article["id"] for article in results})
+    assert any(set(feed_ids) <= set(article["feed_ids"]) for article in results)
+    assert client.get("/api/v1/articles", params={"feed_category": "uncategorized"}).json()["items"] == []
+
+    other = client.post("/api/v1/auth/signup", json={"username": "other-reader"}).json()
+    other_headers = {"Authorization": "Bearer " + other["token"]}
+    other_category = client.post(categories, headers=other_headers, json={"name": "Space News"}).json()
+    other_id = other_category["id"]
+    assert client.get(categories, headers=other_headers).json() == [other_category]
+    assert client.patch(categories + "/" + category_id, headers=other_headers, json={"name": "Stolen"}).status_code == 404
+    assert client.post(categories + "/" + category_id + "/move", headers=other_headers,
+                       json={"direction": "up"}).status_code == 404
+    assert client.post(categories + "/" + category_id + "/move", json={
+        "direction": "up", "relative_to": other_id,
+    }).status_code == 404
+    assert client.patch(f"/api/v1/feeds/{feed_ids[0]}", json={"category_id": other_id}).status_code == 404
+    assert client.get("/api/v1/articles", params={"feed_category": other_id}).status_code == 404
+    foreign_feed = client.post("/api/v1/feeds", headers=other_headers, json={"url": publisher.origin + "/feed"}).json()
+    assert client.put(categories + "/assignments", json={
+        "feed_ids": [feed_ids[0], foreign_feed["id"]], "category_id": None,
+    }).status_code == 404
+    assert {item["category_id"] for item in client.get("/api/v1/feeds").json()} == {category_id}
+    assert client.post("/api/v1/articles", json={
+        "url": publisher.origin + "/other", "subscribe_category_id": category_id,
+    }).status_code == 422
+
+    new_category = client.post(categories, json={"name": "Tech"}).json()
+    assert client.put(categories + "/assignments", json={
+        "feed_ids": feed_ids, "category_id": new_category["id"],
+    }).status_code == 204
+    # Replaying an older queued subscription should not undo the user's move.
+    replay = client.post("/api/v1/feeds", json={"url": publisher.origin + "/feed", "category_id": category_id})
+    assert replay.json()["category_id"] == new_category["id"]
+    assert client.patch(categories + "/" + new_category["id"], json={"name": "Engineering"}).json()["name"] == "Engineering"
+    updates = client.get("/api/v1/sync", params={"after": cursor}).json()
+    assert any(item["kind"] == "feed_category" and item["data"]["name"] == "Engineering" for item in updates["items"])
+    snapshot = client.get("/api/v1/sync", params={
+        "after": updates["cursor"], "include_feed_categories": True,
+    }).json()
+    assert snapshot["items"] == []
+    assert snapshot["feed_categories"] == [category, new_category | {"name": "Engineering"}]
+    assert snapshot["feed_category_assignments"] == dict.fromkeys(feed_ids, new_category["id"])
+
+    assert client.delete(categories + "/" + new_category["id"]).status_code == 204
+    changes = client.get("/api/v1/sync", params={"after": updates["cursor"]}).json()["items"]
+    assert [(item["kind"], item["operation"]) for item in changes].count(("feed_category", "delete")) == 1
+    assert {item["id"] for item in changes if item["kind"] == "feed" and item["data"]["category_id"] is None} == set(feed_ids)
+    assert client.get("/api/v1/articles", params={"feed_category": "uncategorized"}).json()["items"] == results
+    with write(engine) as db:
+        assert all(db.get(Feed, feed_id).category_id is None for feed_id in feed_ids)
+        assert db.scalar(select(FeedEntry.article_id).where(FeedEntry.feed_id == feed_ids[0]))
+        assert db.get(Feed, feed_ids[0]).account_id == owner

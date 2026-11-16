@@ -98,6 +98,7 @@ struct AddSheet: View {
     @BasketState private var address = ""
     @BasketState private var tagText = ""
     @BasketState private var feedURL = ""
+    @BasketState private var categoryID: String?
     @BasketState private var preview: LinkPreview?
     @BasketState private var file: FileChoice?
     @BasketState private var error: String?
@@ -172,6 +173,11 @@ struct AddSheet: View {
 
             if file != nil || (preview?.kind == .article || preview?.kind == .pdf) || (previewError != nil && url != nil) {
                 LibraryTagField(suggestions: tags, text: $tagText)
+            }
+            if let preview, file == nil, !store.feedCategories.isEmpty,
+               (preview.kind == .feed && feed?.already_subscribed != true) ||
+               (preview.kind == .article && feed?.already_subscribed != true) {
+                FeedCategoryPicker(selection: $categoryID)
             }
             if let error { Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.red) }
             if !store.canUseAPI { Text("Connect and sign in to add items.").foregroundStyle(.secondary) }
@@ -342,7 +348,7 @@ struct AddSheet: View {
         let choice = website ? nil : feed
         run {
             didSubscribe(try await store.subscribe(url: choice?.url ?? preview.url,
-                                                   title: choice?.title ?? preview.title ?? "", website: website))
+                                                   title: choice?.title ?? preview.title ?? "", website: website, categoryID: categoryID))
         }
     }
 
@@ -352,7 +358,7 @@ struct AddSheet: View {
 
     private func saveAddress(_ url: String, title: String, pdf: Bool, feed: String? = nil) {
         run {
-            let result = try await store.saveLink(url, title: title, tags: LibraryTags.parse(tagText), pdf: pdf, feed: feed)
+            let result = try await store.saveLink(url, title: title, tags: LibraryTags.parse(tagText), pdf: pdf, feed: feed, categoryID: categoryID)
             didSave(result.article)
         }
     }

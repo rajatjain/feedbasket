@@ -205,7 +205,7 @@ def publisher_archive(url, *, fetch_document=fetch):
     return site.url
 
 
-def subscribe(db, account_id, url, title, interval=None, *, kind="feed"):
+def subscribe(db, account_id, url, title, interval=None, *, kind="feed", category_id=None):
     existing = db.scalar(select(Feed).where(Feed.account_id == account_id, Feed.url == url))
     if existing:
         if existing.kind != kind:
@@ -218,7 +218,7 @@ def subscribe(db, account_id, url, title, interval=None, *, kind="feed"):
             enqueue(db, "refresh", existing.id)
         return existing
     feed = Feed(id=str(uuid4()), account_id=account_id, url=url, title=title or url, interval_minutes=interval,
-                kind=kind, history_end=kind == "website")
+                kind=kind, history_end=kind == "website", category_id=category_id)
     db.add(feed)
     db.flush()
     changed(db, account_id, "feed", feed.id)
@@ -229,7 +229,7 @@ def subscribe(db, account_id, url, title, interval=None, *, kind="feed"):
 def feed_data(feed):
     data = {key: getattr(feed, key) for key in (
         "id", "url", "custom_title", "interval_minutes", "last_checked", "next_check",
-        "history_end", "active", "error", "initial_done", "kind",
+        "history_end", "active", "error", "initial_done", "kind", "category_id",
     )}
     return data | {"title": feed.custom_title or feed.title}
 

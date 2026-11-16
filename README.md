@@ -123,6 +123,12 @@ The app defaults to port `12000`. For the CLI backend, change it to port `8787` 
 
 Hover over an article row to mark it read or unread, archive it, or star it. When you leave a read article in the inbox, FeedBasket moves it to **Trash** unless it’s starred. Archive articles you want to keep and star ones you want to revisit. Choose **Restore to Inbox** to bring an article back as unread. The backend permanently removes articles and their highlights after 30 days in Trash.
 
+## Organize subscriptions
+
+Use **+** beside **Subscriptions** in the Mac sidebar to create a category. Drag a feed onto a category to move it, or drag a category onto another to reorder them. The **…** and right-click menus also offer category actions and let you move feeds without dragging. Click a category to read its feeds together, or use **All articles** to see every subscription.
+
+The Mac **Add** sheet and Chrome popup let you choose a category when subscribing. A feed can belong to one category, and deleting a category moves its feeds to **Uncategorized**. Categories sync through your FeedBasket account and are separate from tags on saved articles and PDFs.
+
 ## Save and read PDFs
 
 - **Save from macOS.** Click **+ Add** to paste a PDF link, choose a file, or drag one into the window. FeedBasket stores the URL for a linked PDF and uploads local files to Cloudflare R2. Find both under **Read Later → PDFs**, with the same tags you use for articles. When the sidebar is hidden, **+ Add** moves to the window toolbar.
