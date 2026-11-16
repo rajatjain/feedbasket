@@ -809,7 +809,6 @@ struct ArticleReader: View {
         }
         .buttonStyle(ArticleToolbarButtonStyle(isMode: true, selected: selected))
         .foregroundStyle(selected ? style.accent : style.color(BasketTokens.text))
-        .opacity(selected || presentation.canSwitch ? 1 : 0.4)
         .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .modifier(ReaderTooltip(title: title, shortcut: nil, alignment: .bottom))
