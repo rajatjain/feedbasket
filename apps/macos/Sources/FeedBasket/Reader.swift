@@ -82,6 +82,9 @@ struct ReaderPage: NSViewRepresentable {
             source: ReaderCodeBlock.script, injectionTime: .atDocumentEnd,
             forMainFrameOnly: true, in: .defaultClient))
         configuration.userContentController.addUserScript(WKUserScript(
+            source: ReaderTable.script, injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true, in: .defaultClient))
+        configuration.userContentController.addUserScript(WKUserScript(
             source: ArticleSelection.actionScript, injectionTime: .atDocumentEnd,
             forMainFrameOnly: true, in: .defaultClient))
         let view = WKWebView(frame: .zero, configuration: configuration)
@@ -137,6 +140,7 @@ struct ReaderPage: NSViewRepresentable {
         img { max-width: 100%; height: auto; }
         img[src] { cursor: zoom-in; }
         \(ReaderCodeBlock.css(style: style))
+        \(ReaderTable.css(style: style))
         blockquote { margin-inline: 0; border-left: 2px solid \(style.css(BasketTokens.line)); padding-left: 16px; }
         #linked-feeds { margin-top: 24px; padding-top: 12px; border-top: 1px solid \(style.css(BasketTokens.line));
                         font: 13px/1.5 -apple-system, sans-serif; text-align: left; }
