@@ -449,9 +449,10 @@ struct ArticleReader: View {
     let perform: (ArticleAction) -> Void
     let showImage: (ArticleImage, @escaping () -> Void) -> Void
     let restartReader: RestartReaderState
+    @AppStorage(ReaderToolbarDisplay.key) private var toolbarDisplay = ReaderToolbarDisplay.icons
     @AppStorage("readerFont") private var font = "Georgia"
     @AppStorage("readerSize") private var size = 17.0
-    @AppStorage("readerAlign") private var storedAlignment = ReaderAlignment.left.rawValue
+    @AppStorage("readerAlign") private var storedAlignment = ReaderAlignment.justified.rawValue
     @AppStorage("readerLine") private var lineHeight = 1.65
     @AppStorage("readerWidth") private var width = 62
     @AppStorage(AutoReadPreference.key) private var autoReadDelay = AutoReadPreference.defaultDelay
@@ -486,7 +487,7 @@ struct ArticleReader: View {
         )
         let showingOriginal = presentation.mode == .original
         VStack(alignment: .leading, spacing: 0) {
-            LibraryPaneHeader(horizontalInset: BasketTokens.spacing) {
+            LibraryPaneHeader(horizontalInset: BasketTokens.spacing, expandsForContent: true) {
                 actions(presentation, hasOriginal: original != nil)
             }
             .zIndex(1)
@@ -660,26 +661,59 @@ struct ArticleReader: View {
     }
 
     private func actions(_ presentation: ArticleReaderPresentation, hasOriginal: Bool) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 3) {
+                readingTools
+                Spacer(minLength: 2)
+                if hasOriginal { modeSwitch(presentation) }
+                toolbarDivider
+                libraryActions
+                if article.original != nil { toolbarDivider }
+                linkActions
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 3) {
+                    readingTools
+                    Spacer(minLength: 2)
+                    if hasOriginal { modeSwitch(presentation) }
+                }
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 3) {
+                        libraryActions
+                        if article.original != nil { toolbarDivider }
+                        linkActions
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        libraryActions
+                        linkActions
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(ArticleToolbarButtonStyle())
+    }
+
+    private var toolbarDivider: some View {
+        Divider().frame(height: 16).padding(.horizontal, 3)
+    }
+
+    private var readingTools: some View {
         HStack(spacing: 3) {
-            toolbarButton("Reading appearance", icon: "textformat", tooltipAlignment: .bottomLeading) { options.toggle() }
+            toolbarButton("Reading appearance", name: "Appearance", icon: "textformat", tooltipAlignment: .bottomLeading) { options.toggle() }
                 .popover(isPresented: $options) { appearanceOptions }
             toolbarButton(isFocused ? "Exit Focus Mode" : "Enter Focus Mode",
+                          name: isFocused ? "Exit Focus" : "Focus",
                           icon: isFocused ? "arrow.down.right.and.arrow.up.left" : "viewfinder",
                           active: isFocused, shortcut: isFocused ? "Esc" : nil,
                           tooltipAlignment: .bottomLeading, action: focus)
-            Spacer(minLength: 2)
-            if hasOriginal {
-                HStack(spacing: 1) {
-                    modeButton(.reader, title: "Reader Mode", presentation: presentation)
-                    modeButton(.original, title: "Original Page", presentation: presentation)
-                }
-                .padding(.horizontal, 2)
-                .background(style.color(BasketTokens.subtle).opacity(0.45), in: .rect(cornerRadius: BasketTokens.radius))
-                .disabled(!presentation.canSwitch)
-            }
-            Divider().frame(height: 16).padding(.horizontal, 3)
+        }
+    }
 
+    private var libraryActions: some View {
+        HStack(spacing: 3) {
             toolbarButton(article.read ? "Mark as unread" : "Mark as read",
+                          name: article.read ? "Mark unread" : "Mark read",
                           icon: article.read ? "envelope.badge" : "envelope.open") {
                 if let latest = store.article(article.id),
                    store.change(Mutation(articleID: latest.id, read: !latest.read)) {
@@ -701,28 +735,17 @@ struct ArticleReader: View {
                     store.change(Mutation(articleID: article.id, action: "restore"))
                 }
             }
-            toolbarButton("Edit tags", icon: "tag", tooltipAlignment: article.original == nil ? .bottomTrailing : .bottom) {
+            toolbarButton("Edit tags", name: "Tags", icon: "tag", tooltipAlignment: article.original == nil ? .bottomTrailing : .bottom) {
                 tagText = article.tags.joined(separator: ", ")
                 editingTags = true
             }
+        }
+    }
 
-            if let url = article.original {
-                Divider().frame(height: 16).padding(.horizontal, 3)
-                if article.extractor != "website" && article.location != "trash" {
-                    Menu {
-                        Button("Refresh Reader Content", systemImage: "arrow.clockwise") {
-                            Task { await store.refreshReaderContent(article.id) }
-                        }
-                        .disabled(!store.canUseAPI || store.readerRefreshes.contains(article.id))
-                    } label: {
-                        Label("More reader actions", systemImage: "ellipsis.circle").labelStyle(.iconOnly)
-                    }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                    .modifier(ReaderTooltip(title: "More reader actions", shortcut: nil, alignment: .bottomTrailing))
-                }
-                toolbarButton("Open original", icon: "arrow.up.right.square", tooltipAlignment: .bottomTrailing) {
+    @ViewBuilder private var linkActions: some View {
+        if let url = article.original {
+            HStack(spacing: 3) {
+                toolbarButton("Open in Browser", icon: "arrow.up.right.square", tooltipAlignment: .bottomTrailing) {
                     NSWorkspace.shared.open(url)
                 }
                 Menu {
@@ -734,39 +757,72 @@ struct ArticleReader: View {
                     }
                     ShareLink(item: url) { Text("Share…") }
                 } label: {
-                    Label("Share article", systemImage: "square.and.arrow.up")
-                        .labelStyle(.iconOnly)
+                    ArticleToolbarLabel(title: "Share", icon: "square.and.arrow.up", display: toolbarDisplay)
                 }
+                .accessibilityLabel("Share article")
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .modifier(ReaderTooltip(title: "Share article", shortcut: nil, alignment: .bottomTrailing))
+                if article.extractor != "website" && article.location != "trash" {
+                    Menu {
+                        Button("Refresh Reader Content", systemImage: "arrow.clockwise") {
+                            Task { await store.refreshReaderContent(article.id) }
+                        }
+                        .disabled(!store.canUseAPI || store.readerRefreshes.contains(article.id))
+                    } label: {
+                        ArticleToolbarLabel(title: "More", icon: "ellipsis", display: toolbarDisplay)
+                    }
+                    .accessibilityLabel("More reader actions")
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .modifier(ReaderTooltip(title: "More reader actions", shortcut: nil, alignment: .bottomTrailing))
+                }
             }
         }
-        .buttonStyle(ReaderToolbarButtonStyle())
     }
 
-    private func modeButton(_ mode: ArticleReaderPresentation.Mode, title: String,
+    private func modeSwitch(_ presentation: ArticleReaderPresentation) -> some View {
+        HStack(spacing: 0) {
+            modeButton(.reader, name: "Reader", title: "Reader Mode", icon: "text.justify", presentation: presentation)
+            modeButton(.original, name: "Original", title: "Original Page", icon: "globe", presentation: presentation)
+        }
+        .background {
+            RoundedRectangle(cornerRadius: BasketTokens.radius + 1)
+                .fill(style.color(BasketTokens.subtle).opacity(0.45))
+                .overlay {
+                    RoundedRectangle(cornerRadius: BasketTokens.radius + 1)
+                        .strokeBorder(style.color(BasketTokens.muted).opacity(style.scheme == .dark ? 0.5 : 0.36),
+                                      lineWidth: 1)
+                }
+                .frame(height: ArticleToolbarMetrics.outlineHeight)
+        }
+        .disabled(!presentation.canSwitch)
+    }
+
+    private func modeButton(_ mode: ArticleReaderPresentation.Mode, name: String, title: String, icon: String,
                             presentation: ArticleReaderPresentation) -> some View {
         let selected = presentation.mode == mode
         return Button { preferredMode = mode } label: {
-            ReaderModeIcon(mode: mode)
-                .stroke(style: StrokeStyle(lineWidth: 1.15, lineCap: .round))
-                .frame(width: 16, height: 12.35)
+            ArticleToolbarLabel(title: name, icon: icon, display: toolbarDisplay, isMode: true)
         }
-        .buttonStyle(ReaderToolbarButtonStyle(active: selected, size: CGSize(width: 33, height: 24.7)))
-        .foregroundStyle(style.color(BasketTokens.text))
+        .buttonStyle(ArticleToolbarButtonStyle(isMode: true, selected: selected))
+        .foregroundStyle(selected ? style.accent : style.color(BasketTokens.text))
         .opacity(selected || presentation.canSwitch ? 1 : 0.4)
         .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .modifier(ReaderTooltip(title: title, shortcut: nil, alignment: .bottom))
     }
 
-    private func toolbarButton(_ title: String, icon: String, active: Bool = false, shortcut: String? = nil,
+    private func toolbarButton(_ title: String, name: String? = nil, icon: String, active: Bool = false, shortcut: String? = nil,
                                tooltipAlignment: Alignment = .bottom, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Label(title, systemImage: icon).labelStyle(.iconOnly) }
-            .foregroundStyle(active ? style.accent : style.color(BasketTokens.text))
-            .modifier(ReaderTooltip(title: title, shortcut: shortcut, alignment: tooltipAlignment))
+        Button(action: action) {
+            ArticleToolbarLabel(title: name ?? title, icon: icon, display: toolbarDisplay)
+        }
+        .foregroundStyle(active ? style.accent : style.color(BasketTokens.text))
+        .accessibilityLabel(title)
+        .modifier(ReaderTooltip(title: title, shortcut: shortcut, alignment: tooltipAlignment))
     }
 
     private var appearanceOptions: some View {
@@ -846,29 +902,6 @@ private extension View {
         frame(maxWidth: width, alignment: .leading)
             .padding(.horizontal, ReadingPreferences.horizontalInset)
             .frame(maxWidth: .infinity)
-    }
-}
-
-private struct ReaderModeIcon: Shape {
-    let mode: ArticleReaderPresentation.Mode
-
-    func path(in rect: CGRect) -> Path {
-        Path { path in
-            switch mode {
-            case .reader:
-                for (index, width) in [14.0, 10.5, 13.0, 7.5].enumerated() {
-                    let y = rect.midY - 4.2 + CGFloat(index) * 2.8
-                    path.move(to: CGPoint(x: rect.midX - 7, y: y))
-                    path.addLine(to: CGPoint(x: rect.midX - 7 + width, y: y))
-                }
-            case .original:
-                let circle = CGRect(x: rect.midX - 5.6, y: rect.midY - 5.6, width: 11.2, height: 11.2)
-                path.addEllipse(in: circle)
-                path.addEllipse(in: circle.insetBy(dx: 3.35, dy: 0))
-                path.move(to: CGPoint(x: circle.minX, y: rect.midY))
-                path.addLine(to: CGPoint(x: circle.maxX, y: rect.midY))
-            }
-        }
     }
 }
 

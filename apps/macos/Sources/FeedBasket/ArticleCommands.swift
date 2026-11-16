@@ -133,6 +133,7 @@ extension FocusedValues {
 }
 
 struct ArticleCommands: Commands {
+    @AppStorage(ReaderToolbarDisplay.key) private var toolbarDisplay = ReaderToolbarDisplay.icons
     @FocusedValue(\.selectedArticleActions) private var selection
     @Environment(\.openWindow) private var openWindow
 
@@ -147,6 +148,14 @@ struct ArticleCommands: Commands {
                 .keyboardShortcut(action.key, modifiers: [.command, .shift])
                 .disabled(selection.map { !action.allows($0.article) } ?? true)
             }
+        }
+        CommandGroup(after: .toolbar) {
+            Picker("Toolbar Display", selection: $toolbarDisplay) {
+                ForEach(ReaderToolbarDisplay.allCases) { display in
+                    Text(display.title).tag(display)
+                }
+            }
+            .pickerStyle(.menu)
         }
         CommandGroup(after: .help) {
             Button("Keyboard Shortcuts") { openWindow(id: "keyboard-shortcuts") }
