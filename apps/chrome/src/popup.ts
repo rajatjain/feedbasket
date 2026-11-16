@@ -58,7 +58,17 @@ function queueButton(label: string, type: string, item: QueuedAction) {
   return control;
 }
 
-function report(error: unknown) { note(error instanceof Error ? error.message : "Request failed."); }
+function handleInvalidContext(error: unknown): boolean {
+  if (!(error instanceof Error) || !error.message.includes("Extension context invalidated")) return false;
+  window.clearInterval(buildCheck);
+  button("reload-extension").hidden = true;
+  note("FeedBasket was reloaded. Reopen the popup to continue.");
+  return true;
+}
+
+function report(error: unknown) {
+  if (!handleInvalidContext(error)) note(error instanceof Error ? error.message : "Request failed.");
+}
 
 let tab: chrome.tabs.Tab | undefined;
 let current: State = { settings: defaultSettings, online: false, queue: [], recentTags: [] };
@@ -306,21 +316,31 @@ chrome.storage.onChanged.addListener(changes => {
 });
 
 async function checkLocalBuild() {
-  const running = chrome.runtime.getManifest().version_name;
-  if (!running?.includes(" (local ")) return;
   try {
+    const running = chrome.runtime.getManifest().version_name;
+    if (!running?.includes(" (local ")) return;
     const response = await fetch(chrome.runtime.getURL("manifest.json"), { cache: "no-store" });
     if (!response.ok) return;
     const { version_name: installed } = await response.json();
     button("reload-extension").hidden = typeof installed !== "string" ||
       !installed.includes(" (local ") || installed === running;
-  } catch { /* The extension can still save while a build is unavailable. */ }
+  } catch (error) {
+    // A missing build is temporary, but a reloaded extension invalidates this popup.
+    handleInvalidContext(error);
+  }
 }
 
-button("reload-extension").onclick = () => { if (!submitting) chrome.runtime.reload(); };
-void checkLocalBuild();
+button("reload-extension").onclick = () => {
+  if (submitting) return;
+  try {
+    chrome.runtime.reload();
+  } catch (error) {
+    report(error);
+  }
+};
 const buildCheck = window.setInterval(() => void checkLocalBuild(), 3000);
 window.addEventListener("pagehide", () => window.clearInterval(buildCheck), { once: true });
+void checkLocalBuild();
 
 void (async () => {
   update(await send<State>({ type: "state" }));
