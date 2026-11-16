@@ -22,3 +22,11 @@
 - Use [apps/design/tokens.json](apps/design/tokens.json) for shared design values. Run `node apps/design/generate.mjs` from the repo root after editing tokens.
 - Use the same components where the rendering technology allows it. For SwiftUI, WebView, and Chrome surfaces that render separately, share the display data and design values where practical.
 - Check both light and dark mode and the supported accent colors when changing UI. Build the affected client using the commands in [README.md](README.md), and verify the affected workflow in the running UI when available.
+
+## Design mockups
+
+- Before creating a mockup, review the current UI and the workflow the change affects. Use the running app or a current screenshot as the visual reference, and check the relevant components in the repo.
+- Build the mockup from the existing screen. Preserve the layout, navigation, control placement, and interaction patterns outside the requested change. Show how the new design fits the surrounding workflow.
+- Use the assets and design tokens that ship with the app, including its logo, icons, typography, colors, and spacing. Use the actual assets in the mockup wherever they appear.
+- Reuse existing components and their interaction states wherever they fit. When an existing component needs to support a new case, extend its design using the same patterns.
+- Before sharing, compare the mockup with the current UI and check for unintended changes to branding, icons, spacing, or controls.
