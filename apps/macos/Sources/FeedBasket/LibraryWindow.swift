@@ -604,13 +604,15 @@ struct LibraryWindow: View {
     }
 
     private func sidebarFeed(_ feed: Feed, unread: Set<String>, nested: Bool) -> some View {
-        SidebarFeedRow(feed: feed, selected: shelf == .feed(feed.id), hasUnread: unread.contains(feed.id),
+        let destination = Shelf.feed(feed.id)
+        let drag = store.canUseAPI && !store.feedCategories.isEmpty
+            ? FeedSidebarDrag(kind: .feed, id: feed.id, scope: store.updateScope) : nil
+        return SidebarFeedRow(feed: feed, selected: shelf == destination, hasUnread: unread.contains(feed.id),
+                       drag: drag, activate: { shelf = destination },
                        rename: { feedRename = FeedRename(feed: feed) }, unsubscribe: { unsubscribingFeed = feed })
             .padding(.leading, nested ? 16 : 0)
-            .feedSidebarDraggable(store.canUseAPI && !store.feedCategories.isEmpty
-                                  ? FeedSidebarDrag(kind: .feed, id: feed.id, scope: store.updateScope) : nil)
-            .tag(Shelf.feed(feed.id))
-            .basketSelection(shelf == .feed(feed.id))
+            .tag(destination)
+            .basketSelection(shelf == destination)
     }
 
     @ViewBuilder private func sidebarCategory(_ title: String, id: String?, feeds: [Feed], unread: Set<String>) -> some View {

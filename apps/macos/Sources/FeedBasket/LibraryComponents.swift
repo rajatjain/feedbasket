@@ -240,27 +240,37 @@ struct SidebarFeedRow: View {
     let feed: Feed
     let selected: Bool
     let hasUnread: Bool
+    let drag: FeedSidebarDrag?
+    let activate: () -> Void
     let rename: () -> Void
     let unsubscribe: () -> Void
 
     var body: some View {
         SidebarRowWithActions(menuTitle: "Feed actions") {
-            Label {
-                Text(feed.title)
-                    .fontWeight(hasUnread ? .semibold : .regular)
-                    .lineLimit(1)
-            } icon: {
-                Image(systemName: feed.isWebsite ? "globe" : "newspaper")
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityValue(hasUnread ? "Unread articles" : "")
+            Button(action: activate) {
+                HStack(spacing: 6) {
+                    Label {
+                        Text(feed.title)
+                            .fontWeight(hasUnread ? .semibold : .regular)
+                            .lineLimit(1)
+                    } icon: {
+                        Image(systemName: feed.isWebsite ? "globe" : "newspaper")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-            if hasUnread {
-                Circle()
-                    .fill(selected ? AnyShapeStyle(.primary) : AnyShapeStyle(style.accent))
-                    .frame(width: 7, height: 7)
-                    .accessibilityHidden(true)
+                    if hasUnread {
+                        Circle()
+                            .fill(selected ? AnyShapeStyle(.primary) : AnyShapeStyle(style.accent))
+                            .frame(width: 7, height: 7)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityValue(hasUnread ? "Unread articles" : "")
+            .accessibilityAddTraits(selected ? .isSelected : [])
+            .feedSidebarDraggable(drag)
         } actions: {
             actions
         }
