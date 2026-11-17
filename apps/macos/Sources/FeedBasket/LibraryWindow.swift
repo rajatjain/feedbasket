@@ -630,14 +630,20 @@ struct LibraryWindow: View {
                 }
                 .buttonStyle(.borderless)
                 .accessibilityLabel(collapsed ? "Expand " + title : "Collapse " + title)
-                Label(title, systemImage: "folder")
-                    .fontWeight(children.contains { unread.contains($0.id) } ? .semibold : .regular)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .feedSidebarDraggable(category.flatMap { category in
-                        store.canUseAPI ? FeedSidebarDrag(kind: .category, id: category.id, scope: store.updateScope) : nil
-                    })
+                Button {
+                    shelf = group
+                } label: {
+                    Label(title, systemImage: "folder")
+                        .fontWeight(children.contains { unread.contains($0.id) } ? .semibold : .regular)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(shelf == group ? .isSelected : [])
+                .feedSidebarDraggable(category.flatMap { category in
+                    store.canUseAPI ? FeedSidebarDrag(kind: .category, id: category.id, scope: store.updateScope) : nil
+                })
             }
         } actions: {
             if let category { categoryActions(category) }
