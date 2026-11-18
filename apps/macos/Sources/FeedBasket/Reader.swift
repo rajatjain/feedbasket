@@ -554,14 +554,14 @@ struct ArticleReader: View {
     private func readerContent(_ html: String?) -> some View {
         let preferences = preferences
         return VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 10) {
                 articleHeading
                 Rectangle()
                     .fill(style.scheme == .dark ? style.color(BasketTokens.muted).opacity(0.28) : style.color(BasketTokens.line))
                     .frame(height: 1)
                     .accessibilityHidden(true)
             }
-            .padding(.top, 24).padding(.bottom, 20)
+            .padding(.top, 14).padding(.bottom, 12)
             .readerColumn(width: preferences.columnWidth)
             if let html {
                 ReaderPage(articleID: article.id, body: html, style: style, preferences: preferences,
@@ -631,25 +631,29 @@ struct ArticleReader: View {
     }
 
     private var articleHeading: some View {
-        VStack(alignment: .leading, spacing: BasketTokens.spacing) {
+        VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 Text(article.source).fontWeight(.semibold).foregroundStyle(style.accent)
                 Text("·").accessibilityHidden(true)
                 Text(article.date, style: .date)
             }
-            .font(.system(size: BasketTokens.labelSize))
+            .font(.system(size: 11))
             .foregroundStyle(style.color(BasketTokens.muted))
             Text(article.title)
-                .font(.system(size: 29, weight: .semibold, design: .serif))
+                .font(.system(size: 25, weight: .semibold, design: .serif))
                 .textSelection(.enabled)
                 .accessibilityAddTraits(.isHeader)
             HStack {
                 Text(article.read ? "Read" : "Unread")
                 if store.offline(article.id) { Label("Text available offline", systemImage: "arrow.down.circle") }
             }
-            .font(.system(size: BasketTokens.labelSize))
+            .font(.system(size: 11))
             .foregroundStyle(style.color(BasketTokens.muted))
-            if !article.tags.isEmpty { Text(article.tags.joined(separator: " · ")).foregroundStyle(style.accent) }
+            if !article.tags.isEmpty {
+                Text(article.tags.joined(separator: " · "))
+                    .font(.system(size: 11))
+                    .foregroundStyle(style.accent)
+            }
         }
     }
 
@@ -911,7 +915,7 @@ private extension View {
 struct ReaderToolbarButtonStyle: ButtonStyle {
     @Environment(\.basketStyle) private var style
     var active = false
-    var size = CGSize(width: 30, height: 30)
+    var size = CGSize(width: 30, height: 28)
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label

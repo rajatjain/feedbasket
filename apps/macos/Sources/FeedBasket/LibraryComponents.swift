@@ -10,7 +10,7 @@ struct LibraryPaneHeader<Content: View>: View {
         VStack(spacing: 0) {
             content()
                 .padding(.horizontal, horizontalInset)
-                .frame(minHeight: 38, maxHeight: expandsForContent ? nil : 38)
+                .frame(minHeight: 32, maxHeight: expandsForContent ? nil : 32)
                 .zIndex(1)
             Divider()
         }

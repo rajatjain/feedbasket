@@ -156,7 +156,7 @@ struct PDFReader: View {
             }
         }
         .padding(.horizontal, BasketTokens.spacing)
-        .padding(.vertical, 5)
+        .padding(.vertical, 3)
     }
 
     private var identityRow: some View {
@@ -217,7 +217,7 @@ struct PDFReader: View {
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
-                .frame(width: 30, height: 30)
+                .frame(width: 30, height: 28)
                 .help("PDF actions")
             }
             if article.location == "trash" && article.pdf?.deletion_pending != true {

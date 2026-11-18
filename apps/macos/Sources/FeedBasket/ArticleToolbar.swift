@@ -17,7 +17,7 @@ enum ReaderToolbarDisplay: String, CaseIterable, Identifiable {
 }
 
 enum ArticleToolbarMetrics {
-    static let controlHeight: CGFloat = 30
+    static let controlHeight: CGFloat = 28
     static let outlineHeight: CGFloat = 20.9
     static let modeIconSize: CGFloat = 12
     static let selectionInset: CGFloat = 3
