@@ -520,6 +520,7 @@ struct LibraryWindow: View {
 
     private var sidebar: some View {
         let unreadFeedIDs = showSubscriptions ? feedsWithUnreadArticles : []
+        let unreadSavedShelves = showSaved ? savedShelvesWithUnreadArticles : []
         let subscriptions = showSubscriptions ? feeds : []
         let visibleFeeds = showAllSidebarFeeds ? subscriptions : subscriptions.filter { feed in
             unreadFeedIDs.contains(feed.id) || shelf == .feed(feed.id)
@@ -570,9 +571,11 @@ struct LibraryWindow: View {
             sidebarSectionDivider
             sidebarHeader { disclosure("Read Later", expanded: $showSaved) }
             if showSaved {
-                Label("All articles", systemImage: "bookmark").tag(Shelf.saved).basketSelection(shelf == .saved)
-                Label("PDFs", systemImage: "doc.richtext").tag(Shelf.pdfs).basketSelection(shelf == .pdfs)
-                ForEach(tags, id: \.self) { tag in Label(tag, systemImage: "tag").tag(Shelf.tag(tag)).basketSelection(shelf == .tag(tag)) }
+                sidebarSavedShelf("All articles", systemImage: "bookmark", destination: .saved, unread: unreadSavedShelves)
+                sidebarSavedShelf("PDFs", systemImage: "doc.richtext", destination: .pdfs, unread: unreadSavedShelves)
+                ForEach(tags, id: \.self) { tag in
+                    sidebarSavedShelf(tag, systemImage: "tag", destination: .tag(tag), unread: unreadSavedShelves)
+                }
             }
             sidebarSectionDivider
             sidebarHeader { Text("Library").fontWeight(.semibold) }
@@ -601,6 +604,29 @@ struct LibraryWindow: View {
                 sidebarFooter
             }
         }
+    }
+
+    private var savedShelvesWithUnreadArticles: Set<Shelf> {
+        let pendingArticleIDs = Set(store.library.pending.map(\.articleID))
+        var shelves = Set<Shelf>()
+        for cached in store.library.articles.values {
+            let article = pendingArticleIDs.contains(cached.id) ? store.article(cached.id) ?? cached : cached
+            guard article.saved_at != nil, article.location == "inbox", !article.read else { continue }
+            shelves.insert(article.isPDF ? .pdfs : .saved)
+            shelves.formUnion(article.tags.map { .tag($0) })
+        }
+        return shelves
+    }
+
+    private func sidebarSavedShelf(_ title: String, systemImage: String, destination: Shelf, unread: Set<Shelf>) -> some View {
+        Button { shelf = destination } label: {
+            SidebarUnreadLabel(title: title, systemImage: systemImage,
+                               selected: shelf == destination, hasUnread: unread.contains(destination))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(shelf == destination ? .isSelected : [])
+        .tag(destination)
+        .basketSelection(shelf == destination)
     }
 
     private func sidebarFeed(_ feed: Feed, unread: Set<String>, nested: Bool) -> some View {

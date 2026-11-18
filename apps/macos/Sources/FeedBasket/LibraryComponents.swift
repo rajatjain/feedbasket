@@ -234,9 +234,33 @@ struct SidebarRowWithActions<Content: View, Actions: View>: View {
     }
 }
 
+struct SidebarUnreadLabel: View {
+    @Environment(\.basketStyle) private var style
+    let title: String
+    let systemImage: String
+    let selected: Bool
+    let hasUnread: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Label(title, systemImage: systemImage)
+                .fontWeight(hasUnread ? .semibold : .regular)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if hasUnread {
+                Circle()
+                    .fill(selected ? AnyShapeStyle(.primary) : AnyShapeStyle(style.accent))
+                    .frame(width: 7, height: 7)
+                    .accessibilityHidden(true)
+            }
+        }
+        .contentShape(Rectangle())
+        .accessibilityValue(hasUnread ? "Unread articles" : "")
+    }
+}
+
 struct SidebarFeedRow: View {
     @Environment(BasketStore.self) private var store
-    @Environment(\.basketStyle) private var style
     let feed: Feed
     let selected: Bool
     let hasUnread: Bool
@@ -248,27 +272,10 @@ struct SidebarFeedRow: View {
     var body: some View {
         SidebarRowWithActions(menuTitle: "Feed actions") {
             Button(action: activate) {
-                HStack(spacing: 6) {
-                    Label {
-                        Text(feed.title)
-                            .fontWeight(hasUnread ? .semibold : .regular)
-                            .lineLimit(1)
-                    } icon: {
-                        Image(systemName: feed.isWebsite ? "globe" : "newspaper")
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    if hasUnread {
-                        Circle()
-                            .fill(selected ? AnyShapeStyle(.primary) : AnyShapeStyle(style.accent))
-                            .frame(width: 7, height: 7)
-                            .accessibilityHidden(true)
-                    }
-                }
-                .contentShape(Rectangle())
+                SidebarUnreadLabel(title: feed.title, systemImage: feed.isWebsite ? "globe" : "newspaper",
+                                   selected: selected, hasUnread: hasUnread)
             }
             .buttonStyle(.plain)
-            .accessibilityValue(hasUnread ? "Unread articles" : "")
             .accessibilityAddTraits(selected ? .isSelected : [])
             .feedSidebarDraggable(drag)
         } actions: {
