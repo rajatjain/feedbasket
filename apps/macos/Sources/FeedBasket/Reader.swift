@@ -462,7 +462,6 @@ struct ArticleReader: View {
     @AppStorage(AutoReadPreference.key) private var autoReadDelay = AutoReadPreference.defaultDelay
     @BasketState private var options: Bool = false
     @BasketState private var editingTags: Bool = false
-    @BasketState private var tagText: String = ""
     @BasketState private var failure: (articleID: String, detail: String)? = nil
     @BasketState private var completedReaderLoad: String?
     @BasketState private var preferredMode = ArticleReaderPresentation.Mode.reader
@@ -541,13 +540,10 @@ struct ArticleReader: View {
                 // Suggestions are optional and the reader remains available if a lookup fails.
             }
         }
-        .alert("Edit tags", isPresented: $editingTags) {
-            TextField("Comma-separated tags", text: $tagText)
-            Button("Save") {
-                do { store.change(Mutation(articleID: article.id, tags: try LibraryTags.parse(tagText))) }
-                catch { store.report(error) }
+        .popover(isPresented: $editingTags) {
+            LibraryTagEditor(tags: article.tags) { tags in
+                store.change(Mutation(articleID: article.id, tags: tags))
             }
-            Button("Cancel", role: .cancel) {}
         }
     }
 
@@ -744,7 +740,6 @@ struct ArticleReader: View {
                 }
             }
             toolbarButton("Edit tags", name: "Tags", icon: "tag", tooltipAlignment: article.original == nil ? .bottomTrailing : .bottom) {
-                tagText = article.tags.joined(separator: ", ")
                 editingTags = true
             }
         }

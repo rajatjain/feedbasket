@@ -19,7 +19,6 @@ struct PDFReader: View {
     @BasketState private var thumbnails = true
     @BasketState private var focusThumbnails = false
     @BasketState private var editingTags = false
-    @BasketState private var tagText = ""
     @BasketState private var query = ""
     @BasketState private var finding = false
     @BasketState private var findFocusRequest = 0
@@ -76,16 +75,9 @@ struct PDFReader: View {
             else if isFocused { changeFocus() }
         }
         .popover(isPresented: $editingTags) {
-            VStack(alignment: .leading, spacing: BasketTokens.spacing) {
-                Text("Edit tags").font(.headline)
-                LibraryTagField(suggestions: tags, text: $tagText)
-                Button("Save") {
-                    do {
-                        let updatedTags = try LibraryTags.parse(tagText)
-                        if store.change(Mutation(articleID: article.id, tags: updatedTags)) { editingTags = false }
-                    } catch { store.report(error) }
-                }.buttonStyle(BasketButton(primary: true))
-            }.padding(14).frame(width: 300)
+            LibraryTagEditor(tags: article.tags) { tags in
+                store.change(Mutation(articleID: article.id, tags: tags))
+            }
         }
     }
 
@@ -194,7 +186,6 @@ struct PDFReader: View {
             }
             if article.location != "trash", article.pdf?.deletion_pending != true {
                 PDFToolbarButton(title: "Edit tags", icon: "tag") {
-                    tagText = article.tags.joined(separator: ", ")
                     editingTags = true
                 }
                 Menu {

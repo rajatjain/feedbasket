@@ -43,43 +43,6 @@ struct LibraryAddFooter: View {
     }
 }
 
-enum LibraryTags {
-    static func parse(_ text: String) throws -> [String] {
-        let tags = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        guard tags.count <= 30, tags.allSatisfy({ $0.count <= 80 }) else {
-            throw APIError(status: 0, detail: "Use up to 30 tags of at most 80 characters.")
-        }
-        return tags
-    }
-}
-
-struct LibraryTagField: View {
-    let suggestions: [String]
-    @Binding var text: String
-
-    var body: some View {
-        HStack {
-            TextField("Tags (optional)", text: $text, prompt: Text("Comma-separated tags"))
-            if !suggestions.isEmpty {
-                Menu {
-                    ForEach(suggestions, id: \.self) { tag in
-                        Button(tag) {
-                            guard let existing = try? LibraryTags.parse(text), existing.count < 30,
-                                  !existing.contains(where: { $0.caseInsensitiveCompare(tag) == .orderedSame }) else { return }
-                            text = (existing + [tag]).joined(separator: ", ")
-                        }
-                    }
-                } label: {
-                    Image(systemName: "tag").accessibilityLabel("Choose a tag")
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-            }
-        }
-    }
-}
-
 struct AddSheet: View {
     private struct FileChoice {
         let url: URL
@@ -96,7 +59,7 @@ struct AddSheet: View {
     let didSubscribe: (Feed) -> Void
 
     @BasketState private var address = ""
-    @BasketState private var tagText = ""
+    @BasketState private var tagSelection = LibraryTagSelection()
     @BasketState private var feedURL = ""
     @BasketState private var categoryID: String?
     @BasketState private var preview: LinkPreview?
@@ -172,7 +135,7 @@ struct AddSheet: View {
             } isTargeted: { targeted = $0 }
 
             if file != nil || (preview?.kind == .article || preview?.kind == .pdf) || (previewError != nil && url != nil) {
-                LibraryTagField(suggestions: tags, text: $tagText)
+                LibraryTagPicker(suggestions: tags, selection: $tagSelection)
             }
             if let preview, file == nil, !store.feedCategories.isEmpty,
                (preview.kind == .feed && feed?.already_subscribed != true) ||
@@ -251,7 +214,7 @@ struct AddSheet: View {
                 run {
                     let access = file.url.startAccessingSecurityScopedResource()
                     defer { if access { file.url.stopAccessingSecurityScopedResource() } }
-                    let article = try await store.importPDF(file.url, id: file.id, tags: LibraryTags.parse(tagText))
+                    let article = try await store.importPDF(file.url, id: file.id, tags: tagSelection.forSave())
                     didSave(article)
                 }
             }.buttonStyle(BasketButton(primary: true)).disabled(!store.canUseAPI)
@@ -358,7 +321,7 @@ struct AddSheet: View {
 
     private func saveAddress(_ url: String, title: String, pdf: Bool, feed: String? = nil) {
         run {
-            let result = try await store.saveLink(url, title: title, tags: LibraryTags.parse(tagText), pdf: pdf, feed: feed, categoryID: categoryID)
+            let result = try await store.saveLink(url, title: title, tags: tagSelection.forSave(), pdf: pdf, feed: feed, categoryID: categoryID)
             didSave(result.article)
         }
     }
