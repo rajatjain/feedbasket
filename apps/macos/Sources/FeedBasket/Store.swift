@@ -378,6 +378,10 @@ final class BasketStore {
         return true
     }
 
+    func isArticleOpen(_ id: String) -> Bool {
+        openArticles.values.contains { $0.id == id && $0.scope == updateScope && $0.libraryID == library.libraryID }
+    }
+
     func setOpenArticle(_ reading: OpenArticle?, in window: UUID) {
         let previous = openArticles[window]
         openArticles[window] = reading

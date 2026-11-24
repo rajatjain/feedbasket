@@ -517,6 +517,7 @@ struct ArticleReader: View {
             do { try await Task.sleep(for: .seconds(delay)) }
             catch { return }
             guard !Task.isCancelled, scope == store.updateScope, !manuallyChangedReadStatus,
+                  store.isArticleOpen(article.id),
                   store.article(article.id)?.read == false else { return }
             store.change(Mutation(articleID: article.id, read: true), automatic: true)
         }

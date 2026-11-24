@@ -233,6 +233,10 @@ struct LibraryWindow: View {
                 }
             }
         }
+        .onExitCommand {
+            if openedImage != nil { closeArticleImage() }
+            else { clearDocumentSelection() }
+        }
         .focusedSceneValue(\.selectedArticleActions, article.map { article in
             SelectedArticleActions(article: article, perform: { if openedImage == nil { perform($0, on: article) } })
         })
@@ -470,15 +474,26 @@ struct LibraryWindow: View {
             if article.isPDF {
                 PDFReader(article: article, highlight: highlight, tags: tags, isFocused: readerFocused,
                           focus: toggleReaderFocus, perform: { perform($0, on: article) },
-                          delete: { deletingPDF = article }, restartReader: restartReader)
+                          delete: { deletingPDF = article }, leave: clearDocumentSelection,
+                          restartReader: restartReader)
             } else {
                 ArticleReader(article: article, highlight: highlight, isFocused: readerFocused, focus: toggleReaderFocus,
                               perform: { perform($0, on: article) }, showImage: openArticleImage,
                               restartReader: restartReader)
-                    .onExitCommand { if readerFocused && openedImage == nil { toggleReaderFocus() } }
             }
         }
         .id("\(store.updateScope)-\(article.id)")
+    }
+
+    private func clearDocumentSelection() {
+        if readerFocused { restartListTarget = focusedListTopID }
+        readerFocused = false
+        selection = []
+        highlightSelection = nil
+        scrollTarget = nil
+        restartReader.pending = nil
+        restartReader.capture = nil
+        store.setOpenArticle(nil, in: windowID)
     }
 
     private func openArticleImage(_ image: ArticleImage, restoreFocus: @escaping () -> Void) {
@@ -879,7 +894,6 @@ struct LibraryWindow: View {
                             }
                         }
                     }
-                    .onExitCommand { selection = [] }
                     .task(id: restartListTarget) { [target = restartListTarget] in
                         guard let target else { return }
                         await Task.yield()

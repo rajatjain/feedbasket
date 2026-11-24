@@ -13,6 +13,7 @@ struct PDFReader: View {
     let focus: () -> Void
     let perform: (ArticleAction) -> Void
     let delete: () -> Void
+    let leave: () -> Void
     let restartReader: RestartReaderState
 
     @BasketState private var reader = PDFReaderController()
@@ -72,7 +73,7 @@ struct PDFReader: View {
         }
         .onExitCommand {
             if finding { closeFind() }
-            else if isFocused { changeFocus() }
+            else { leave() }
         }
         .popover(isPresented: $editingTags) {
             LibraryTagEditor(tags: article.tags) { tags in

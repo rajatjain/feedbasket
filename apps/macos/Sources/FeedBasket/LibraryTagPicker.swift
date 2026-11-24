@@ -231,6 +231,7 @@ struct LibraryTagEditor: View {
             }
         }
         .padding(14).frame(width: 360)
+        .onExitCommand { dismiss() }
     }
 }
 
