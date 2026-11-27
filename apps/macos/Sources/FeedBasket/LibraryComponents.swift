@@ -11,6 +11,7 @@ struct LibraryPaneHeader<Content: View>: View {
             content()
                 .padding(.horizontal, horizontalInset)
                 .frame(minHeight: 32, maxHeight: expandsForContent ? nil : 32)
+                .basketChrome(.toolbar)
                 .zIndex(1)
             Divider()
         }

@@ -39,7 +39,6 @@ struct LibraryAddFooter: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, BasketTokens.spacing * 0.8)
         }
-        .background(style.color(style.palette.sidebar))
     }
 }
 

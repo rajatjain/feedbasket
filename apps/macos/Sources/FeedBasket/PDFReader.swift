@@ -150,6 +150,7 @@ struct PDFReader: View {
         }
         .padding(.horizontal, BasketTokens.spacing)
         .padding(.vertical, 3)
+        .basketChrome(.toolbar)
     }
 
     private var identityRow: some View {

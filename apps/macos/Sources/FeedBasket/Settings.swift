@@ -2,8 +2,6 @@ import SwiftUI
 
 struct BasketSettings: View {
     @Environment(BasketStore.self) private var store
-    @AppStorage("theme") private var theme = BasketTheme.system
-    @AppStorage("accent") private var accent = BasketTokens.defaultPalette
     @AppStorage(AutoReadPreference.key) private var autoReadDelay = AutoReadPreference.defaultDelay
     @BasketState private var origin: String = ""
     @BasketState private var cutoff: Date = Calendar.current.startOfDay(for: .now)
@@ -35,15 +33,7 @@ struct BasketSettings: View {
                 }
             }.formStyle(.grouped).tabItem { Label("Connection", systemImage: "network") }
 
-            Form {
-                Picker("Theme", selection: $theme) { ForEach(BasketTheme.allCases) { Text($0.label).tag($0) } }
-                Picker("Palette", selection: Binding(
-                    get: { BasketStyle.palette(for: accent).id },
-                    set: { accent = $0 }
-                )) {
-                    ForEach(BasketTokens.palettes) { Text($0.label).tag($0.id) }
-                }
-            }.formStyle(.grouped).tabItem { Label("Appearance", systemImage: "paintpalette") }
+            BasketAppearanceSettings().tabItem { Label("Appearance", systemImage: "paintpalette") }
 
             Form {
                 Stepper(value: $autoReadDelay, in: AutoReadPreference.delays) {

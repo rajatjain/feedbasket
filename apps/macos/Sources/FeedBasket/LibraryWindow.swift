@@ -601,7 +601,6 @@ struct LibraryWindow: View {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
-        .background(style.color(style.palette.sidebar))
         .safeAreaInset(edge: .top, alignment: .leading, spacing: 0) {
             HStack(spacing: BasketTokens.spacing / 2) {
                 FeedBasketWordmark(compact: update.isReady)
@@ -619,6 +618,7 @@ struct LibraryWindow: View {
                 sidebarFooter
             }
         }
+        .basketChrome(.sidebar, fallback: style.color(style.palette.sidebar))
     }
 
     private var savedShelvesWithUnreadArticles: Set<Shelf> {

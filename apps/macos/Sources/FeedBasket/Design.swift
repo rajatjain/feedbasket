@@ -74,10 +74,12 @@ struct BasketStyle {
 struct BasketAppearance: ViewModifier {
     @AppStorage("theme") private var theme = BasketTheme.system
     @AppStorage("accent") private var accent = BasketTokens.defaultPalette
+    @AppStorage("interfaceStyle") private var interfaceStyle = BasketInterfaceStyle.classic
 
     func body(content: Content) -> some View {
         BasketSurface(accent: accent) { content }
             .preferredColorScheme(theme.scheme)
+            .environment(\.basketInterfaceStyle, interfaceStyle)
     }
 }
 

@@ -76,7 +76,7 @@ struct PDFToolbarPanel: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background(style.color(style.palette.surface), in: .rect(cornerRadius: BasketTokens.radius))
+            .basketChrome(.floating, fallback: style.color(style.palette.surface), radius: BasketTokens.radius)
             .overlay {
                 RoundedRectangle(cornerRadius: BasketTokens.radius).strokeBorder(style.color(BasketTokens.line))
                     .allowsHitTesting(false)

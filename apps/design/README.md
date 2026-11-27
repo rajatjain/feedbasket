@@ -12,3 +12,5 @@
 | Reader controls | | `Reader.swift` |
 
 The Mac sidebar uses the transparent basket and papers from Chrome’s extension icon beside the rounded lowercase wordmark in the active accent color. The Chrome popup pairs the wordmark with its own light and dark artwork. Chrome’s toolbar shows the transparent mark with a bright blue basket for reachable and a muted blue basket for offline. The Mac bundle uses the light ICNS in Finder and switches the running app’s Dock icon with the app theme.
+
+The Mac Appearance settings keep Theme, Palette, and Interface style independent. Classic is the default; Liquid Glass requires macOS 26+. `BasketChrome` in `InterfaceStyle.swift` owns navigation vibrancy and native glass for shared pane headers and floating PDF/image controls. Keep reading content and document rows opaque. Reduce Transparency and Increase Contrast use the existing solid surfaces while preserving the saved style preference. Reuse this modifier when adding navigation or floating controls rather than creating separate glass effects.
