@@ -480,6 +480,8 @@ struct ArticleReader: View {
         ReadingPreferences(font: font, size: size, textAlignment: alignment.cssValue, lineHeight: lineHeight, width: width)
     }
 
+    private var isRefreshing: Bool { store.readerRefreshes.contains(article.id) }
+
     var body: some View {
         let html = store.html(for: article.id)
         let original = OriginalArticlePage.webURL(article.original)
@@ -489,6 +491,8 @@ struct ArticleReader: View {
             loadFinished: completedReaderLoad == readerLoad, hasOriginal: original != nil, preference: preferredMode
         )
         let showingOriginal = presentation.mode == .original
+        let showReader = !showingOriginal && !isRefreshing
+        let showOriginal = showingOriginal && !isRefreshing
         VStack(alignment: .leading, spacing: 0) {
             LibraryPaneHeader(horizontalInset: BasketTokens.spacing, expandsForContent: true) {
                 actions(presentation, hasOriginal: original != nil)
@@ -496,15 +500,18 @@ struct ArticleReader: View {
             .zIndex(1)
             ZStack {
                 readerContent(html)
-                    .opacity(showingOriginal ? 0 : 1)
-                    .allowsHitTesting(!showingOriginal)
-                    .accessibilityHidden(showingOriginal)
+                    .opacity(showReader ? 1 : 0)
+                    .allowsHitTesting(showReader)
+                    .accessibilityHidden(!showReader)
                 if let original, showingOriginal || openedOriginal {
                     OriginalArticlePage(url: original)
                         .id(original)
-                        .opacity(showingOriginal ? 1 : 0)
-                        .allowsHitTesting(showingOriginal)
-                        .accessibilityHidden(!showingOriginal)
+                        .opacity(showOriginal ? 1 : 0)
+                        .allowsHitTesting(showOriginal)
+                        .accessibilityHidden(!showOriginal)
+                }
+                if isRefreshing {
+                    refreshProgress
                 }
             }
         }
@@ -546,6 +553,22 @@ struct ArticleReader: View {
                 store.change(Mutation(articleID: article.id, tags: tags))
             }
         }
+    }
+
+    private var refreshProgress: some View {
+        let message = "Refreshing reader content…"
+        return VStack(spacing: BasketTokens.spacing) {
+            ProgressView()
+                .progressViewStyle(.circular)
+                .controlSize(.regular)
+                .tint(style.accent)
+                .accessibilityLabel(message)
+            Text(message)
+                .foregroundStyle(style.color(BasketTokens.muted))
+                .accessibilityHidden(true)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(style.color(style.readingSurface))
     }
 
     private func readerContent(_ html: String?) -> some View {
@@ -771,9 +794,12 @@ struct ArticleReader: View {
                 if article.extractor != "website" && article.location != "trash" {
                     Menu {
                         Button("Refresh Reader Content", systemImage: "arrow.clockwise") {
-                            Task { await store.refreshReaderContent(article.id) }
+                            Task {
+                                preferredMode = .reader
+                                await store.refreshReaderContent(article.id)
+                            }
                         }
-                        .disabled(!store.canUseAPI || store.readerRefreshes.contains(article.id))
+                        .disabled(!store.canUseAPI || isRefreshing)
                     } label: {
                         ArticleToolbarLabel(title: "More", icon: "ellipsis", display: toolbarDisplay)
                     }
@@ -802,7 +828,7 @@ struct ArticleReader: View {
                 }
                 .frame(height: ArticleToolbarMetrics.outlineHeight)
         }
-        .disabled(!presentation.canSwitch)
+        .disabled(!presentation.canSwitch || isRefreshing)
     }
 
     private func modeButton(_ mode: ArticleReaderPresentation.Mode, name: String, title: String, icon: String,

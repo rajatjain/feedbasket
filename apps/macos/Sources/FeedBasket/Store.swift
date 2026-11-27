@@ -65,6 +65,7 @@ final class BasketStore {
 
     private func loadScope() {
         updateScope = UUID()
+        readerRefreshes.removeAll()
         syncIssue = nil
         articleUndo = nil
         clearToasts()
@@ -325,6 +326,7 @@ final class BasketStore {
         syncIssue = nil
         Diagnostics.write("Account connected")
         updateScope = UUID()
+        readerRefreshes.removeAll()
         articleUndo = nil
         clearToasts()
         await refresh()
@@ -580,7 +582,7 @@ final class BasketStore {
             let detail: Article = try await api.call("/api/v1/articles/" + id)
             guard !Task.isCancelled, scope == updateScope, libraryID == library.libraryID,
                   library.articles[id]?.content_status == article.content_status else { return nil }
-            if article.content_status == "ready" { readerBodies[id] = detail.body_html }
+            if article.content_status == "ready", html(for: id) == nil { readerBodies[id] = detail.body_html }
             return detail.content_error
         } catch {
             if scope == updateScope { report(error) }
@@ -605,15 +607,17 @@ final class BasketStore {
         let scope = updateScope
         let libraryID = library.libraryID
         let api = self.api
-        defer { readerRefreshes.remove(id) }
+        defer {
+            if scope == updateScope { readerRefreshes.remove(id) }
+        }
+        AccessibilityNotification.Announcement("Refreshing reader content…").post()
         do {
             let job: JobRequest = try await api.call("/api/v1/articles/\(id)/refresh-reader", method: "POST")
             guard scope == updateScope, libraryID == library.libraryID else { return }
             guard let jobID = job.job_id else { throw APIError(status: 0, detail: "Reader refresh could not be queued.") }
-            notify("Refreshing reader content…", icon: "arrow.clockwise")
-
-            for _ in 0..<90 {
-                try await Task.sleep(for: .seconds(1))
+            let fastPollingUntil = ContinuousClock.now + .seconds(90)
+            while true {
+                try await Task.sleep(for: .seconds(ContinuousClock.now < fastPollingUntil ? 1 : 5))
                 guard scope == updateScope, libraryID == library.libraryID else { return }
                 let status: Job = try await api.call("/api/v1/jobs/\(jobID)")
                 if status.status == "failed" {
@@ -636,7 +640,6 @@ final class BasketStore {
                 notify("Reader content refreshed.")
                 return
             }
-            notify("Reader refresh is still queued or running.", icon: "clock")
         } catch is CancellationError {
         } catch {
             if scope == updateScope, libraryID == library.libraryID { report(error) }
