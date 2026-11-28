@@ -351,7 +351,7 @@ struct LibraryWindow: View {
     private var hiddenSidebarActions: some View {
         HStack(spacing: BasketTokens.spacing / 2) {
             if update.isReady { AppUpdateChip(restart: restart) }
-            LibraryAddButton(action: showAdd)
+            if !readerFocused { LibraryAddButton(action: showAdd) }
         }
     }
 
