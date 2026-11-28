@@ -233,10 +233,7 @@ struct LibraryWindow: View {
                 }
             }
         }
-        .onExitCommand {
-            if openedImage != nil { closeArticleImage() }
-            else { clearDocumentSelection() }
-        }
+        .onExitCommand(perform: escapeReader)
         .focusedSceneValue(\.selectedArticleActions, article.map { article in
             SelectedArticleActions(article: article, perform: { if openedImage == nil { perform($0, on: article) } })
         })
@@ -474,15 +471,22 @@ struct LibraryWindow: View {
             if article.isPDF {
                 PDFReader(article: article, highlight: highlight, tags: tags, isFocused: readerFocused,
                           focus: toggleReaderFocus, perform: { perform($0, on: article) },
-                          delete: { deletingPDF = article }, leave: clearDocumentSelection,
+                          delete: { deletingPDF = article }, leave: escapeReader,
                           restartReader: restartReader)
             } else {
                 ArticleReader(article: article, highlight: highlight, isFocused: readerFocused, focus: toggleReaderFocus,
+                              escape: escapeReader,
                               perform: { perform($0, on: article) }, showImage: openArticleImage,
                               restartReader: restartReader)
             }
         }
         .id("\(store.updateScope)-\(article.id)")
+    }
+
+    private func escapeReader() {
+        if openedImage != nil { closeArticleImage() }
+        else if readerFocused { toggleReaderFocus() }
+        else { clearDocumentSelection() }
     }
 
     private func clearDocumentSelection() {

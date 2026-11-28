@@ -71,10 +71,8 @@ struct PDFReader: View {
         .onChange(of: article.pdf?.deletion_pending) {
             if article.pdf?.deletion_pending == true { closeFind() }
         }
-        .onExitCommand {
-            if finding { closeFind() }
-            else { leave() }
-        }
+        .onExitCommand(perform: escapeReader)
+        .background { ReaderEscapeShortcut(escape: escapeReader) }
         .popover(isPresented: $editingTags) {
             LibraryTagEditor(tags: article.tags) { tags in
                 store.change(Mutation(articleID: article.id, tags: tags))
@@ -315,6 +313,11 @@ struct PDFReader: View {
     private func submitFind() {
         if reader.hasSearch(for: query) { reader.stepMatch(1) }
         else { reader.search(query) }
+    }
+
+    private func escapeReader() {
+        if finding { closeFind() }
+        else { leave() }
     }
 
     private func closeFind() {

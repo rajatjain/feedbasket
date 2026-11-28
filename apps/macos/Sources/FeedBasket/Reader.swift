@@ -450,6 +450,7 @@ struct ArticleReader: View {
     let highlight: Highlight?
     let isFocused: Bool
     let focus: () -> Void
+    let escape: () -> Void
     let perform: (ArticleAction) -> Void
     let showImage: (ArticleImage, @escaping () -> Void) -> Void
     let restartReader: RestartReaderState
@@ -516,6 +517,7 @@ struct ArticleReader: View {
             }
         }
         .anchorPreference(key: ArticleImageReaderBounds.self, value: .bounds) { $0 }
+        .background { ReaderEscapeShortcut(escape: escape) }
         .onChange(of: showingOriginal, initial: true) { if showingOriginal { openedOriginal = true } }
         .task(id: autoReadDelay) { [scope = store.updateScope] in
             guard !article.read, !manuallyChangedReadStatus else { return }
